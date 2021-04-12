@@ -1,0 +1,690 @@
+---
+title: "Mobile Footprinting"
+output:
+  html_notebook:
+    toc: yes
+    toc_float:
+      toc_collapsed: yes
+---
+### 1. Setup Environment 
+
+```{r load packages, message=FALSE, warning=TRUE}
+require(ggplot2)
+require(summarytools)
+require(cowplot)
+require(caret)
+require(corrplot)
+require(RColorBrewer)
+require(vembedr)
+require(Rmisc)
+require(varian)
+require(patchwork)
+require(plotly)
+require(Metrics)
+require(dplyr)
+require(ggpubr)
+require(mosaic)
+require(openxlsx)
+require(visreg)
+require(factoextra)
+require(rstatix)
+require(gridExtra)
+require(colorspace)
+require(grid)
+require(data.table)
+require(psych)
+require(sna)
+source("~/Documents/xia_gps/code/plotting_functions.R")
+```
+
+```{r define paths}
+project_path = "~/Documents/xia_gps/"
+data_path = file.path(project_path,"beiwe_output_043020")
+gps_df_path = file.path(data_path,"Processed_Data/Group/feature_matrix.txt")
+```
+
+
+### 2.Prepare GPS data 
+```{r read_gps}
+gps_df = read.table(gps_df_path,header = T, dec = ",")[,c(1,2,97:111)]
+gps_df[,3:17] = apply(gps_df[,3:17],2,as.numeric)
+```
+
+```{r exclude GPS data, fig.width=10, fig.height=4}
+# loop through each subj to remove 1st and last days of gps data
+	gps_df_clean = data.frame() #initiate a df
+	for (subj in unique(gps_df$IID)){ #loop through each subj
+	  gps_df_subj <- subset(gps_df, IID == subj) #get gps_df per subject
+	  gps_df_subj <- gps_df_subj[2:(dim(gps_df_subj)[1]-1),] #remove the 1st and last days
+	  gps_df_clean <- rbind(gps_df_clean,gps_df_subj) #combine all subjs
+	}
+
+	# exclude days with too much excessiveness
+	sensitivity_cutoff = 1440 # this controls the cutoff threshold
+	gps_df_clean2 = subset(gps_df_clean, MinsMissing < sensitivity_cutoff)
+```
+   
+```{r Partition GPS data}
+set.seed(510)
+part_times = 1000
+subj_seq = make_subj_seq(gps_df_clean2, part_times)
+```
+
+```{r example_cor_fig, fig.width=3, fig.width=3, fig.align="center"}
+# an example of subj 1, and first half
+example_data = gps_df_clean2[subj_seq$`16xv6ko1`$Resample0001,3:17]
+gps_cor = rquery.cormat(example_data, type = "full")
+```
+
+```{r create feature matrix for everyone, warning=FALSE}
+
+gps_clean2_feature = make_feature_matrix(gps_df_clean2, subj_seq, 3:17 )
+subject_seq = names(gps_clean2_feature$subj_mat_1)
+```
+
+```{r visualization of feature correlations across subjects}
+gps_wide_matrix = data.frame()
+subj_days = gps_df_clean2 %>% group_by(IID) %>% dplyr::tally(name = "Days Collected")
+for (subj in arrange(subj_days,`Days Collected`)$IID){
+  #if ((subj %in% subj_days$IID[which(subj_days$`Days Collected`<=10)]) == T) {
+    for (part in 1:5){
+      half_1 = gps_clean2_feature$subj_mat_1[[subj]][[part]]$cor
+      half_2 = gps_clean2_feature$subj_mat_2[[subj]][[part]]$cor
+      half_1_half_2 = c(half_1,half_2)
+      gps_wide_matrix = rbind(gps_wide_matrix,half_1)
+      gps_wide_matrix = rbind(gps_wide_matrix,half_2)
+      }
+    #}
+}
+
+gps_wide_matrix = t(gps_wide_matrix)
+gps_corplot = rquery.cormat(gps_wide_matrix, type = "full",graph=FALSE)
+gps_corplot$subj = arrange(subj_days,`Days Collected`)$IID
+
+getPalette = colorRampPalette(brewer.pal(9, "RdYlBu"))
+levelplot(gps_corplot$r,scales=list(draw=FALSE),col.regions = rev(getPalette(50)), region =T, ylab.right = "Pearson correlation", main=list(label='GPS Feature Similarity'),xlab="",ylab="")
+```
+
+### 3. Prepare accelerometer data
+```{r organizing accelerometer data}
+subj_list = unique(gps_df$IID)
+subj_acc_data_clean = as.data.frame(rbindlist(lapply(subj_list, function(subj) { subj_data =  readRDS(file.path(data_path,"Processed_Data/Group/accelerometer",subj,"accelerometer_ft.rds")); subj_data[2:(dim(subj_data)[1]-1),c(2:8,11)]}))) #also removes 1st and last day
+```
+
+```{r example of the cov of accelerometer,fig.width=3, fig.width=3,fig.align="center"}
+example_acc_data = subj_acc_data_clean[subj_seq$`16xv6ko1`$Resample0001,1:7]
+acc_cor = rquery.cormat(example_acc_data, type = "full")
+```
+
+```{r calc acc features}
+subj_acc_data_clean$IID = subj_acc_data_clean$subject
+set.seed(510)
+acc_subj_seq = make_subj_seq(subj_acc_data_clean, part_times)
+acc_clean_feature = make_feature_matrix(subj_acc_data_clean, acc_subj_seq,  c(1:7) )
+
+```
+
+```{r plot acc subject similarity matrix}
+acc_wide_matrix = data.frame()
+subj_acc_days = subj_acc_data_clean %>% group_by(IID) %>% dplyr::tally(name = "acc_days")
+for (subj in arrange(subj_acc_days,`acc_days`)$IID){
+    for (part in 1:5){
+      half_1 = acc_clean_feature$subj_mat_1[[subj]][[part]]$cor
+      half_2 = acc_clean_feature$subj_mat_2[[subj]][[part]]$cor
+      half_1_half_2 = c(half_1,half_2)
+      acc_wide_matrix = rbind(acc_wide_matrix,half_1)
+      acc_wide_matrix = rbind(acc_wide_matrix,half_2)
+      }
+}
+
+acc_wide_matrix = t(acc_wide_matrix)
+acc_corplot = rquery.cormat(acc_wide_matrix, type = "full",graph=FALSE)
+acc_corplot$subj = arrange(subj_acc_days,`acc_days`)$IID
+
+
+levelplot(acc_corplot$r,scales=list(draw=FALSE),col.regions = rev(getPalette(50)), region =T, ylab.right = "Pearson correlation", main=list(label='Acc Feature Similarity'),xlab="",ylab="")
+```
+
+### 4. Merge GPS and accelerometer data
+```{r combine gps + acc}
+gps_acc_combined_feat = list()
+for (subj in subj_list){
+  for (time in 1:part_times){
+    gps_feat1 = gps_clean2_feature$subj_mat_1[[subj]][[time]]$cor
+    acc_feat1 = acc_clean_feature$subj_mat_1[[subj]][[time]]$cor
+    
+    gps_feat2 = gps_clean2_feature$subj_mat_2[[subj]][[time]]$cor
+    acc_feat2 = acc_clean_feature$subj_mat_2[[subj]][[time]]$cor
+
+    gps_acc_combined_feat$subj_mat_1[[subj]][[time]] = c(gps_feat1, acc_feat1)
+    gps_acc_combined_feat$subj_mat_2[[subj]][[time]] = c(gps_feat2, acc_feat2)
+  }
+}
+```
+
+
+### 5. GPS and accelerometer based Individual Identification
+```{r match with combined features}
+match_combined_gps_accfeat = calc_match_vector(gps_acc_combined_feat$subj_mat_1, gps_acc_combined_feat$subj_mat_2, "cor")
+acc_time_cb_accgps  = calc_acc_time(match_combined_gps_accfeat, "max")
+acc_subj_cb_accgps  = calc_acc_subj(match_combined_gps_accfeat, "max")
+```
+
+```{r , fig.align="center", fig.height=5, fig.width=5}
+p = hist_chx(acc_time_cb_accgps, bins = 14, title = paste("Individual Identificaiton Accuracy \n (GPS+ Accel)"), xaxis = "Prediction Accuracy", yaxis = "Count")
+ggplotly(p)
+```
+
+
+
+```{r acc+gps perm}
+perm_time = 10
+gps_df_perm = gps_df_clean2
+acc_df_perm = subj_acc_data_clean
+
+perm_acc_gps_time = list()
+perm_acc_gps_subj = list()
+
+for (i in 1:perm_time) {
+  perm_part_times = 1
+  print(paste("processing ...", i,"..."))
+  gps_df_perm$IID = sample(gps_df_perm$IID)
+  acc_df_perm$IID = sample(acc_df_perm$IID)
+  
+  perm_subj_seq = make_subj_seq(gps_df_perm,part_times = perm_part_times)
+  perm_acc_subj_seq = make_subj_seq(acc_df_perm,part_times = perm_part_times)
+  
+  perm_gps_cor = make_feature_matrix(gps_df_perm,perm_subj_seq,3:17)
+  perm_acc_cor = make_feature_matrix(acc_df_perm,perm_acc_subj_seq,1:7)
+  
+  subj_mat_1 = list()
+  subj_mat_2 = list()
+  
+    for (subj in subj_list){
+        subj_mat_1[[subj]]$Resample1 = as.numeric(c(perm_gps_cor$subj_mat_1[[subj]][[1]]$cor, perm_acc_cor$subj_mat_1[[subj]][[1]]$cor))
+        subj_mat_2[[subj]]$Resample1 = as.numeric(c(perm_gps_cor$subj_mat_2[[subj]][[1]]$cor, perm_acc_cor$subj_mat_2[[subj]][[1]]$cor))
+    }
+  perm_gps_acc_mats = list(subj_mat_1 = subj_mat_1, subj_mat_2 = subj_mat_2)
+  
+  perm_match = calc_match_vector(perm_gps_acc_mats$subj_mat_1,perm_gps_acc_mats$subj_mat_2, "cor")
+  perm_acc_gps_time[[i]] = calc_acc_time(perm_match, "max")
+  perm_acc_gps_subj[[i]] = calc_acc_subj(perm_match, "max")
+}
+
+
+perm_acc_gps_time = unlist(perm_acc_gps_time)
+perm_acc_gps_subj = unlist(perm_acc_gps_subj)
+
+```
+
+```{r gps_accel permutation}
+df = data.frame(val = perm_acc_gps_time)
+p = ggplot(df, aes(x=val)) + 
+    geom_histogram(bins = 7, fill = "#9ECAE1", size = 2) + 
+    theme_cowplot() +
+    labs(title=paste("GPS+Accel: \n",part_times,"Permutations"),
+         x  = "Individual Identificaiton Accuracy", y = "Count") + 
+  #geom_density(alpha=.2) +
+    theme(plot.title = element_text(hjust = 0.5))
+ggplotly(p)
+```
+```{r plot subj analysis with perm, fig.width=8, fig.height=4}
+perm_subj = sapply(subject_seq, function(subj) sum(perm_acc_gps_subj[which(names(perm_acc_gps_subj) == subj)])/1000)
+
+subj_df <- data.frame(x=names(subj_seq))
+subj_df$y = acc_subj_cb_accgps
+subj_df$y_perm = perm_subj
+subj_df = subj_df[order(subj_df$y),]
+p_subj_cor_perm = ggplot(subj_df, aes(x = reorder(x, y), y = value)) + 
+  geom_point(aes(y = y), color = "#F69274", size = 2) + 
+  geom_point(aes(y = y_perm), color = "#9ECAE1", size =2 ) +
+  theme_cowplot() + 
+  labs(title = paste("GPS+Accel \n Subject Level Accuracy Across",part_times,"Data Partitions"), 
+       x = "Subjects", y = "Individual Identification Accuracy") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8), plot.title = element_text(hjust = 0.5))
+ggplotly(p_subj_cor_perm)
+```
+
+### 6. GPS only based Individual Identification
+```{r gps ID}
+gps_match_cor = calc_match_cor(gps_clean2_feature$subj_mat_1,gps_clean2_feature$subj_mat_2)
+gps_acc_time = calc_acc_time(gps_match_cor, "max")
+gps_acc_subj = calc_acc_subj(gps_match_cor)
+
+gps_df_perm = gps_df_clean2
+perm_time = 1000
+perm_acc_time = list()
+perm_acc_subj = list()
+for (i in 1:perm_time) {
+  perm_part_times = 1
+  print(paste("processing ...", i,"..."))
+  gps_df_perm$IID = sample(gps_df_perm$IID)
+  perm_subj_seq = make_subj_seq(gps_df_perm, part_times = perm_part_times)
+  perm_gps = make_feature_matrix(gps_df_perm,perm_subj_seq,3:17)
+  perm_mat_1 = perm_gps$subj_mat_1
+  perm_mat_2 = perm_gps$subj_mat_2
+  perm_match_cor = calc_match_cor(perm_mat_1,perm_mat_2)
+  perm_acc_time[[i]] = calc_acc_time(perm_match_cor)
+  perm_acc_subj[[i]] = calc_acc_subj(perm_match_cor)
+}
+```
+
+```{r gps plots 1}
+p_time_cor = hist_chx(acc_time, bins = 17, title = paste("GPS: \n Individual identification accuracy"), xaxis = "Individual identification accuracy", yaxis = "Count")
+ggplotly(p_time_cor)
+```
+
+```{r gps plots 2}
+#perm_acc_time_all = unlist(perm_acc_time)
+q_time_cor = hist_chx(perm_acc_time_all, bins = 7, title = paste("GPS accuracy across",length(perm_acc_time_all),"Permutations"), xaxis = "Individual Identificaiton Accuracy", yaxis = "Count")
+ggplotly(q_time_cor)
+```
+
+```{r gps plots 3}
+perm_acc_subj = unlist(perm_acc_subj)
+perm_subj = sapply(subject_seq, function(subj) sum(perm_acc_subj[which(names(perm_acc_subj) == subj)])/1000)
+
+subj_df <- data.frame(x=names(subj_seq))
+subj_df$y = gps_acc_subj
+subj_df$y_perm = perm_subj
+subj_df = subj_df[order(subj_df$y),]
+p_subj_cor_perm = ggplot(subj_df, aes(x = reorder(x, y), y = value)) + 
+  geom_point(aes(y = y, col = "subject data")) + 
+  geom_point(aes(y = y_perm, col = "permutation")) +
+  theme_cowplot() + 
+  labs(title = paste("GPS \n Subject Level Accuracy Across",perm_time,"permutations"), 
+       x = "Subjects", y = "Individual identification accuracy") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8), plot.title = element_text(hjust = 0.5))
+ggplotly(p_subj_cor_perm)
+```
+
+### 7. Accelerometer only based Individual Identification 
+```{r match on acc features}
+acc_match_cor = calc_match_cor(acc_clean_feature$subj_mat_1,acc_clean_feature$subj_mat_2)
+acc_acc_time = calc_acc_time(acc_match_cor, "max")
+acc_acc_subj = calc_acc_subj(acc_match_cor)
+```
+
+```{r acc perm}
+acc_df_perm = subj_acc_data_clean
+perm_time = 1000
+perm_acc_acc_time = list()
+perm_acc_acc_subj = list()
+for (i in 1:perm_time) {
+  perm_part_times = 1
+  print(paste("processing ...", i,"..."))
+  acc_df_perm$IID = sample(acc_df_perm$IID)
+  perm_subj_seq = make_subj_seq(acc_df_perm, part_times = perm_part_times)
+  perm_acc = make_feature_matrix(acc_df_perm,perm_subj_seq,1:7)
+  perm_mat_1 = perm_acc$subj_mat_1
+  perm_mat_2 = perm_acc$subj_mat_2
+  perm_match_cor = calc_match_cor(perm_mat_1,perm_mat_2)
+  perm_acc_acc_time[[i]] = calc_acc_time(perm_match_cor)
+  perm_acc_acc_subj[[i]] = calc_acc_subj(perm_match_cor)
+}
+```
+
+```{r acc plots 1}
+df = data.frame(val = acc_acc_time)
+p = ggplot(df, aes(x=val)) + 
+    geom_histogram(bins = 15, fill = "#F69274", size = 2) + 
+    theme_cowplot() +
+    labs(title=paste("Accelerometer Features: \n Average Accuracy Across",part_times,"Data Partitions"),
+         x  = "Mobility Footprint Individual Identification Accuracy", y = "Count") + 
+  #geom_density(alpha=.2) +
+    theme(plot.title = element_text(hjust = 0.5))
+ggplotly(p)
+```
+```{r acc plots 2}
+df = data.frame(val = perm_acc_acc_time)
+p = ggplot(df, aes(x=val)) + 
+    geom_histogram(bins = 5, fill = "#9ECAE1", size = 2) + 
+    theme_cowplot() +
+    labs(title=paste("Accelerometer Features: \n Average Accuracy Across",perm_time,"Permutations"),
+         x  = "Mobility Footprint Individual Identification Accuracy", y = "Count") + 
+  #geom_density(alpha=.2) +
+    theme(plot.title = element_text(hjust = 0.5))
+ggplotly(p)
+```
+```{r acc plots 3}
+perm_acc_acc_subj = unlist(perm_acc_acc_subj)
+perm_subj = sapply(subject_seq, function(subj) sum(perm_acc_acc_subj[which(names(perm_acc_acc_subj) == subj)])/1000)
+
+subj_df <- data.frame(x=names(subj_seq))
+subj_df$y = acc_acc_subj
+subj_df$y_perm = perm_subj
+subj_df = subj_df[order(subj_df$y),]
+p_subj_cor_perm = ggplot(subj_df, aes(x = reorder(x, y), y = value)) + 
+  geom_point(aes(y = y, col = "subject data")) + 
+  geom_point(aes(y = y_perm, col = "permutation")) +
+  theme_cowplot() + 
+  labs(title = paste("Accelerometer \n Subject Level Accuracy Across",perm_time,"permutations"), 
+       x = "Subjects", y = "Individual identification accuracy") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8), plot.title = element_text(hjust = 0.5))
+ggplotly(p_subj_cor_perm)
+```
+
+```{r gsp v acc vs gps+acc}
+df_accgps_time = data.frame(GPS = gps_acc_time, Accelerometer = acc_acc_time, `GPS and Acceleromter` = acc_time_cb_accgps)
+df_accgps_time_long = gather(df_accgps_time, feature, accuracy, 1:3, factor_key=TRUE)
+mu = ddply(df_accgps_time_long, "feature", summarise, grp.mean=mean(accuracy))
+p_accgps_feature = ggplot(df_accgps_time_long, aes(x=accuracy,color = feature, fill = feature)) + 
+    geom_density(size = 1, alpha = 0) + 
+    #geom_histogram(aes(y=..density..), alpha=0.2, 
+    #            position="identity") + 
+    geom_vline(data=mu, aes(xintercept=grp.mean, color=feature),
+             linetype="dashed") +
+    labs(y = "Density", x = "Individual Identitication Accuracy") + 
+    theme_cowplot() +
+    theme(legend.position="top")
+p_accgps_feature
+```
+
+
+
+### 8. Data quantity vs. quality associations
+```{r data quantity}
+gps_days = gps_df_clean2 %>% group_by(IID) %>% dplyr::tally(name = "gps_days")
+acc_days = subj_acc_data_clean %>% group_by(IID) %>% dplyr::tally(name = "acc_days")
+data_quant_plots = list()
+data_quant_plots$gps = conf_scatter_plot(gps_days, gps_acc_subj, "gps_days")
+data_quant_plots$acc = conf_scatter_plot(acc_days, acc_acc_subj, "acc_days")
+Reduce(`+`,data_quant_plots)
+```
+
+
+```{r data quality}
+gps_quality = gps_df_clean2 %>% group_by(IID) %>% dplyr::summarize(MinsMissing = mean(MinsMissing,na.rm=T))
+acc_quality = sapply(subj_list,get_data_mean)
+acc_quality$IID = names(acc_data_quality)
+acc_quality$datapoints = as.numeric(value(unlist(acc_data_quality)[1:41]))
+
+data_qual_plots = list()
+data_qual_plots$gps = conf_scatter_plot(gps_quality, gps_acc_subj, "MinsMissing")
+data_qual_plots$acc = conf_scatter_plot(acc_quality, acc_acc_subj, "datapoints")
+
+Reduce(`+`,data_qual_plots)
+```
+
+### 9. Developmental effects and sex differences
+```{r curate demographic data}
+ids = read.xlsx(file.path(project_path,"data/clinical_data/subjecttracker_4.xlsx"))[1:41,c(1,3)]
+demo_tem = read.csv(file.path(project_path,"data/clinical_data/self_report_itemwise.csv"), colClasses = c("NULL",NA,"NULL","NULL",NA,NA,rep("NULL",363)))
+
+demo_beiwe = inner_join(ids,demo_tem, by = c("BBLID" = "bblid"))
+acc_subj_df = data.frame(beiweID = names(acc_subj), gps = gps_acc_subj, acc = acc_acc_subj, accgps = acc_subj_cb_accgps)
+acc_demo_df = inner_join(acc_subj_df,demo_beiwe, by = "beiweID")
+acc_demo_df = inner_join(acc_demo_df,gps_days, by = c("beiweID" = "IID"))
+acc_demo_df = inner_join(acc_demo_df,acc_days, by = c("beiweID" = "IID"))
+acc_demo_df$admin_sex = as.factor(acc_demo_df$admin_sex)
+```
+
+```{r gps age and sex}
+agesex_gps_fit = gam(gps ~ s(admin_age) + admin_sex + gps_days, data = acc_demo_df, method = "REML")
+
+p_gps = list()
+
+p_gps$age = visreg(agesex_gps_fit, "admin_age", gg = T, line=list(col="#3576b5",size = 0.5, alpha = 0.25), 
+       points=list(size=2, pch=19), fill= list(fill=c("#b3d3f2"), alpha = 1)) + 
+  xlab("Age") + ylab("Individual Footprint Distinctiveness \n (GPS)") +  theme_cowplot()
+
+p_gps$sex = visreg(agesex_gps_fit, "admin_sex", gg = T, line=list(col="#3576b5",size = 0.5, alpha = 0.25), 
+       points=list(size=2, pch=19), fill= list(fill=c("#b3d3f2"), alpha = 0.25)) + 
+  xlab("Sex") + ylab("Individual Footprint Distinctiveness \n (GPS)") +  theme_cowplot()
+
+Reduce(`+`,p_gps)
+```
+
+```{r acc age and sex}
+agesex_acc_fit = gam(acc ~ s(admin_age) + admin_sex + acc_days , data = acc_demo_df, method = "REML")
+
+p_acc = list()
+
+p_acc$age = visreg(agesex_acc_fit, "admin_age", gg = T, line=list(col="#3576b5",size = 0.5, alpha = 0.25), 
+       points=list(size=2, pch=19), fill= list(fill=c("#b3d3f2"), alpha = 0.25)) + 
+  xlab("Age") + ylab("Individual Footprint Distinctiveness \n (Accel)") +  theme_cowplot()
+
+p_acc$sex = visreg(agesex_acc_fit, "admin_sex", gg = T, line=list(col="#3576b5",size = 0.5, alpha = 0.25), 
+       points=list(size=2, pch=19), fill= list(fill=c("#b3d3f2"), alpha = 1)) + 
+  xlab("Sex") + ylab("Individual Footprint Distinctiveness \n (Accel)") +  theme_cowplot()
+
+Reduce(`+`,p_acc)
+```
+
+
+### 10. Mood and sleep instability
+```{r }
+survey_ft = readRDS(file.path(data_path,"Results/Group/survey_ft.rds"))
+
+q_list = unique(substr(names(survey_ft$`26k56oo9`),1,29))
+
+q_list_long = names(survey_ft$`26k56oo9`)
+
+mood_since_qs = 20:26
+
+rmssd_mood_since = sapply(subj_list, function(subj) rmssd(rbindlist(lapply(lapply(q_list[mood_since_qs], get_question_ans),function(q) q[[subj]]))$ans_num))
+mean_mood_since = sapply(subj_list, function(subj) mean(rbindlist(lapply(lapply(q_list[mood_since_qs], get_question_ans),function(q) q[[subj]]))$ans_num, na.rm = T))
+mood_df = acc_demo_df
+mood_df$rmssd = rmssd_mood_since
+mood_df$mean = mean_mood_since
+
+mood_accgps_fit = gam(accgps ~ rmssd + gps_days + acc_days + s(admin_age) + admin_sex + mean, data = mood_df,  method = "REML")
+
+
+sleep_duration = "About how many hours did you "
+rmssd_sleep_dur = get_question_variance(sleep_duration)
+mean_sleep_dur = get_question_mean(sleep_duration)
+sleep_df = acc_demo_df
+sleep_df$rmssd = rmssd_sleep_dur
+sleep_df$mean = mean_sleep_dur
+
+sleep_accgps_fit = gam(accgps ~ rmssd + gps_days + acc_days + s(admin_age) + admin_sex + mean, data = sleep_df,  method = "REML")
+```
+
+```{r plots}
+p_mood_sleep = list()
+
+p_mood_sleep$mood = visreg(mood_accgps_fit, "rmssd", gg = T, line=list(col="#3576b5",size = 0.5, alpha = 0.25), 
+       points=list(size=2, pch=19), fill= list(fill=c("#b3d3f2"), alpha = 1), ylim = c(0,1)) + 
+  xlab("Mood Instability") + ylab("Individual Footprint Distinctiveness") +  theme_cowplot()
+
+p_mood_sleep$sleep = visreg(sleep_accgps_fit, "rmssd", gg = T, line=list(col="#3576b5",size = 0.5, alpha = 0.25), 
+       points=list(size=2, pch=19), fill= list(fill=c("#b3d3f2"), alpha = 1), ylim = c(0,1)) +
+  xlab("Sleep Instability") + ylab("Individual Footprint Distinctiveness") +  theme_cowplot()
+
+Reduce(`+`,p_mood_sleep)
+
+```
+
+
+### 11. Within Network Functional Connectivity
+```{r define FC paths}
+project_path = "~/Documents/xia_gps/"
+data_path = file.path(project_path,"data/flywheel_data/network_txt")
+```
+
+```{r compile fc data}
+subj_net_files = list()
+atlases = c("schaefer200x7","schaefer400x7")
+for (atlas in atlases) {
+  subjects = list.files(file.path(data_path))
+  for (subj in subjects){
+    subj_files = list.files(file.path(data_path,subj))
+    net_pattern = paste0("*task-rest*multi*",atlas,"*")
+    file_path = file.path(data_path, 
+                            subj,subj_files[grep(glob2rx(net_pattern),subj_files)])
+    if (length(file_path)>0) {subj_net_files[[atlas]][[subj]] = read.table(file_path)
+  }
+  }
+}
+
+motion_df = c()
+for (subj in subjects){
+  subj_quality_files = list.files(file.path(data_path,"../quality_csv",subj))
+  net_pattern = paste0("*task-rest*multi*")
+  subj_quality_file = file.path(data_path, "../quality_csv",subj,subj_quality_files[grep(glob2rx(net_pattern),subj_quality_files)])
+  motion_df[subj] = read.csv(subj_quality_file)$relMeanRMSMotion
+}
+```
+
+
+
+```{r compute fc community}
+atlas_path = "/Users/hxia/Documents/GitHub/xcpEngine/atlas"
+fc_com = lapply(atlases, function(atlas) get_fc_com(atlas, subj_net_files))
+names(fc_com) = atlases
+
+fc_com_mean = lapply(atlases, function(atlas) as.data.frame(sapply(fc_com[[atlas]], function(net_to_net) sapply(net_to_net, function(subj) mean(subj$V1, na.rm=T)))))
+names(fc_com_mean) = atlases
+```
+
+
+```{r merge with demographics}
+fpt_fc = list()
+for (atlas in atlases){
+  fc_subjs = as.numeric(rownames(fc_com_mean[[atlas]]))
+  fc_com_mean[[atlas]]$BBLID = fc_subjs
+  fc_com_mean[[atlas]]$motion = value(motion_df)
+  fpt_fc[[atlas]] = merge(fc_com_mean[[atlas]], acc_demo_df, by = "BBLID")
+}
+
+```
+
+
+```{r network connectivity assos footprint}
+atlas = "schaefer200x7"
+fc_nets = c("vis_vis","som_som","dor_dor","sal_sal","lim_lim","fro_fro")
+fpt_fc_p = data.frame(net = rep(NA, length(fc_nets)), p_val = rep(NA, length(fc_nets)))
+fpt_fc_fit = list()
+for (net in fc_nets){
+  net_i = which(fc_nets == net)
+  fit = gam(get(net)  ~ s(admin_age) + admin_sex + gps_days + acc_days  + motion + accgps, data = fpt_fc[[atlas]], method = "REML")
+  fpt_fc_p$net[net_i] = net
+  fpt_fc_p$p_val[net_i] = summary(fit)[[4]][6]
+  fpt_fc_fit[[net]] = fit
+}
+
+fpt_fc_p$p_val_adjust = p.adjust(fpt_fc_p$p_val,"fdr")
+print(fpt_fc_p)
+```
+
+
+```{r som_som plots}
+som_som_fit = gam(som_som  ~ s(admin_age) + admin_sex + gps_days + acc_days  + motion + accgps, data = fpt_fc[[atlas]], method = "REML")
+visreg(som_som_fit, 'accgps', gg = T) + theme_cowplot() + xlab("Individual Footprint Distinctiveness") + ylab("Som-Som")
+```
+
+### 12. FC predict footprint
+```{r get fc edge data}
+fc_edge = lapply(atlases, function(atlas) get_fc_edge(atlas, subj_net_files))
+names(fc_edge) = atlases
+
+fc_edge_df = sapply(atlases, function(atlas) as.data.frame(t(sapply(fc_edge[[atlas]], function(subj) subj))))
+names(fc_edge_df) = atlases
+
+for (atlas in atlases){
+  fc_edge_df[[atlas]]$BBLID = fc_subjs
+  fc_edge_df[[atlas]]$motion = value(motion_df)
+  fpt_fc_edge[[atlas]] = merge(fc_edge_df[[atlas]], acc_demo_df, by = "BBLID")
+}
+```
+
+```{r}
+atlas = "schaefer200x7"
+non_edge_var = c(tail(names(fpt_fc_edge[[atlas]]),9),"BBLID")
+edge_vars = names(fpt_fc_edge[[atlas]])[-which(names(fpt_fc_edge[[atlas]]) %in% non_edge_var)]
+edge_data = fpt_fc_edge[[atlas]]
+
+lambdas = rev(seq(0.01,0.10,0.01))
+lasso_tune_l = list()
+lasso_out = data.frame()
+for (i in 1:dim(edge_data)[1]){
+  df_train = edge_data[-i,]
+  df_test = edge_data[i,]
+  
+  lasso_tune = lasso_edge(df_train,edge_vars,lambdas)
+  lasso_tune_l[[i]] = lasso_tune
+  best_lambda = lambdas[which.max(lasso_tune)]
+  
+  print(lasso_tune)
+  print(paste(i,"-----", "best lambda is", best_lambda))
+  
+  df_train_fit = gam(accgps  ~ s(admin_age) + admin_sex + gps_days + acc_days  + motion , data = df_train, method = "REML")
+  df_train$accgps_res = df_train_fit$residuals
+  
+  x_train = as.matrix(df_train[,edge_vars])
+  y_train = df_train$accgps_res
+
+  x_test = as.matrix(df_test[,edge_vars])
+  y_test = df_test$accgps - predict(df_train_fit,newdata = df_test)
+  
+  lasso_reg = glmnet(x_train, y_train, lambda = best_lambda, alpha = 1, standardize = TRUE)
+  
+  predictions_test <- predict(lasso_reg, s = best_lambda, newx = x_test)
+  
+  lasso_out[i,"predict"] = as.numeric(predictions_test)
+  lasso_out[i,"real"] = y_test
+}
+```
+
+
+```{r predict scatter plot}
+ggplot(data = lasso_out,aes(x=predict,y = real)) + 
+    geom_point() + theme_cowplot() + geom_smooth(method = lm, colour = "black")  +
+    xlab("Predicted Footprint Distinctiveness ") + ylab("Actual Footprint Distinctiveness ")
+```
+
+```{r predict permutation}
+lasso_perm = list()
+for (j in 1:1000){
+  lambdas = rev(seq(0.01,0.10,0.01))
+  lasso_tune_l = list()
+  lasso_out = data.frame()
+  for (i in 1:dim(edge_data)){
+    df_train = edge_data[-i,]
+    df_test = edge_data[i,]
+    
+    lasso_tune = lasso_edge_perm(df_train,edge_vars,lambdas)
+    lasso_tune_l[[i]] = lasso_tune
+    best_lambda = lambdas[which.max(lasso_tune)]
+    
+    print(lasso_tune)
+    print(paste(i,"-----", "best lambda is", best_lambda))
+    
+    df_train_fit = gam(accgps  ~ s(age) + sex + gps_days + acc_days  + motion , data = df_train, method = "REML")
+    df_train$accgps_res = df_train_fit$residuals
+    
+    x_train = as.matrix(df_train[,edge_vars])
+    y_train = df_train$accgps_res
+    y_train = sample(y_train)
+    
+    x_test = as.matrix(df_test[,edge_vars])
+    y_test = df_test$accgps - predict(df_train_fit,newdata = df_test)
+    
+    lasso_reg = glmnet(x_train, y_train, lambda = best_lambda, alpha = 1, standardize = TRUE)
+    
+    predictions_test <- predict(lasso_reg, s = best_lambda, newx = x_test)
+    
+    lasso_out[i,"predict"] = as.numeric(predictions_test)
+    lasso_out[i,"real"] = y_test
+  }
+  lasso_perm[[j]] = cor(lasso_out$predict,lasso_out$real)
+}
+
+```
+
+```{r perm hist plot}
+lasso_pval = paste("permuted p =", length(which(lasso_perm > cor(lasso_out$predict,lasso_out$real)))/1000)
+ggplot(data.frame(perm=lasso_perm), aes(x=perm)) + 
+  geom_histogram(fill = "light blue") + theme_cowplot() +
+  geom_vline(xintercept= cor(lasso_out$predict,lasso_out$real), color = "red") +
+  xlab("Correlation between actual and predicted") + geom_text(x=-0.2, y=80, label=lasso_pval)
+```
+
+```{r edge results}
+lasso_beta = get_final_lass(edge_data,edge_vars)$beta
+lasso_beta_df = summary(lasso_beta)
+lasso_beta_df$name = edge_vars[summary(lasso_beta)$i]
+print(lasso_beta_df)
+```
+

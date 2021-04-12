@@ -1,0 +1,718 @@
+---
+title: "Functional Connectivity"
+output:
+  html_notebook:
+    includes:
+      after_body: footer.html
+    toc: yes
+    toc_float:
+      toc_collapsed: yes
+---
+`r Sys.time()`
+
+Author: [Cedric Huchuan Xia](https://www.pennlinc.io/team/Cedric-Huchuan-Xia) ([email](hxia@upenn.edu), [github](https://github.com/cedricx/))
+
+Affiliation: Penn Lifespan Informatics and Neuroimaging Center ([PennLINC](pennlinc.io)) 
+
+***
+
+### 1. Setup Environment 
+```{r load libraries, message=FALSE}
+require(reshape2)
+require(sna)
+require(tidyr)
+require(tidyverse)
+```
+
+```{r define paths}
+project_path = "~/Documents/xia_gps/"
+data_path = file.path(project_path,"data/flywheel_data/network_txt")
+atlas_path = "/Users/hxia/Documents/GitHub/xcpEngine/atlas"
+
+
+vector_to_mat = function(fc_vector, method = "half"){
+  
+  if (method == "full"){
+    num_node = sqrt(length(fc_vector))
+    matrix_fc = matrix(NA, num_node, num_node)
+    matrix_fc = matrix(fc_vector, num_node, num_node)
+  } else if (method == "half"){
+    num_node = ceiling(sqrt(length(fc_vector)*2))
+    matrix_fc = matrix(NA, num_node, num_node)
+    matrix_fc[lower.tri(matrix_fc, diag = F)] = fc_vector
+  } else if (method == "half+d") {
+    num_node = floor(sqrt(length(fc_vector)*2))
+    matrix_fc = matrix(NA, num_node, num_node)
+    matrix_fc[lower.tri(matrix_fc, diag = T)] = fc_vector
+  }
+  
+  matrix_fc = symmetrize(matrix_fc, rule = "lower")
+  return(matrix_fc)
+}
+
+get_fc_com = function(atlas_now, subj_net) {
+    com_nums = read.table(file.path(atlas_path,atlas_now,paste0(atlas_now,"CommunityAffiliation.1D")))$V1
+    com_names = read.table(file.path(atlas_path,atlas_now,paste0(atlas_now,"CommunityNames.txt")))$V1
+    com_names = substr(com_names,0,3)
+    if (atlas_now == "power264") {com_names[c(1,2)] = c("smH","smM")}
+    fc_mat_now_all = list()
+    com_name_vec = c()
+    for (net_1 in 1:max(com_nums)){
+      node_now_1 = which(com_nums == net_1)
+      net_name_1 = com_names[net_1]
+      for (net_2 in 1:max(com_nums)){
+        node_now_2 = which(com_nums == net_2)
+        net_name_2 = com_names[net_2]
+        network_now = paste(net_name_1,net_name_2,sep="_")
+        com_name_vec = c(com_name_vec,network_now)
+        for (subj in subjects) {
+        fc_mat = vector_to_mat(subj_net[[atlas_now]][[subj]]$V1)
+        fc_mat_now = fc_mat[node_now_1,node_now_2]
+        fc_mat_now = fc_mat_now[lower.tri(fc_mat_now)]
+        fc_mat_now_all[[network_now]][[subj]]$V1 = as.vector(fc_mat_now)
+        }
+      }
+    }
+    com_name_mat = vector_to_mat(com_name_vec, "full")
+    com_name_vec_short = com_name_mat[lower.tri(com_name_mat, diag = T)]
+    fc_mat_now_all_short = fc_mat_now_all[names(fc_mat_now_all) %in% com_name_vec_short]   
+    return(fc_mat_now_all_short)
+  }
+
+get_fc_nodal = function(atlas_now, subj_net) {
+    com_nums = read.table(file.path(atlas_path,atlas_now,paste0(atlas_now,"CommunityAffiliation.1D")))$V1
+    com_names = read.table(file.path(atlas_path,atlas_now,paste0(atlas_now,"CommunityNames.txt")))$V1
+    com_names = substr(com_names,0,3)
+  
+  if (atlas_now == "power264") {com_names[c(1,2)] = c("smH","smM")}
+  fc_node_now_all = list()
+
+  for (subj in subjects) {
+    fc_mat = vector_to_mat(subj_net[[atlas_now]][[subj]]$V1)
+    fc_node = apply(fc_mat,2,function(x) sum(x, na.rm = T))
+    names(fc_node) = paste(com_names[com_nums], 1:length(com_nums),sep = "_")
+    fc_node_now_all[[subj]]$V1 = fc_node
+  }
+  
+  return(fc_node_now_all)
+}
+
+get_fc_mat = function(atlas_now, subj_net) {
+  fc_mat_all = list()
+  for (subj in subjects) {
+    fc_mat = vector_to_mat(subj_net[[atlas_now]][[subj]]$V1)
+    fc_mat_all[[subj]]$fc_matrix = fc_mat
+    fc_mat_all[[subj]]$covar = data.frame(motion = motion_df[subj],  subset(acc_subj_mood_df, BBLID == subj) )
+  }
+  return(fc_mat_all)
+}
+
+
+get_fc_edge = function(atlas_now, subj_net) {
+    com_nums = read.table(file.path(atlas_path,atlas_now,paste0(atlas_now,"CommunityAffiliation.1D")))$V1
+    com_names = read.table(file.path(atlas_path,atlas_now,paste0(atlas_now,"CommunityNames.txt")))$V1
+    com_names = substr(com_names,0,3)
+  
+  if (atlas_now == "power264") {com_names[c(1,2)] = c("smH","smM")}
+  fc_edge_all = list()
+  
+  mat_names = matrix(NA, nrow = length(com_nums), ncol = length(com_nums))
+  for (node_i in 1:length(com_nums)){
+    for (node_j in 1:length(com_nums)){
+      mat_names[node_i,node_j] = paste(paste0(com_names[com_nums],1:length(com_nums),"")[node_i],
+                                       paste0(com_names[com_nums],1:length(com_nums),"")[node_j],sep = "_")
+    }
+  }
+  
+  for (subj in subjects) {
+    fc_mat = vector_to_mat(subj_net[[atlas_now]][[subj]]$V1)
+    
+    edge_names = mat_names[lower.tri(mat_names, diag = F)]
+    fc_edge = subj_net[[atlas_now]][[subj]]$V1
+    names(fc_edge) = edge_names
+    
+    fc_edge_all[[subj]] = fc_edge
+  }
+  return(fc_edge_all)
+}
+
+```
+
+```{r compile fc data}
+subj_net_files = list()
+atlases = c("schaefer200x7","power264","schaefer400x7")
+for (atlas in atlases) {
+  subjects = list.files(file.path(data_path))
+  for (subj in subjects){
+    subj_files = list.files(file.path(data_path,subj))
+    net_pattern = paste0("*task-rest*multi*",atlas,"*")
+    file_path = file.path(data_path, 
+                            subj,subj_files[grep(glob2rx(net_pattern),subj_files)])
+    if (length(file_path)>0) {subj_net_files[[atlas]][[subj]] = read.table(file_path)
+  }
+  }
+}
+
+motion_df = c()
+for (subj in subjects){
+  subj_quality_files = list.files(file.path(data_path,"../quality_csv",subj))
+  net_pattern = paste0("*task-rest*multi*")
+  subj_quality_file = file.path(data_path, "../quality_csv",subj,subj_quality_files[grep(glob2rx(net_pattern),subj_quality_files)])
+  motion_df[subj] = read.csv(subj_quality_file)$relMeanRMSMotion
+}
+```
+
+```{r compute fc community}
+fc_com = lapply(atlases, function(atlas) get_fc_com(atlas, subj_net_files))
+names(fc_com) = atlases
+
+fc_com_mean = lapply(atlases, function(atlas) as.data.frame(sapply(fc_com[[atlas]], function(net_to_net) sapply(net_to_net, function(subj) mean(subj$V1, na.rm=T)))))
+names(fc_com_mean) = atlases
+
+fc_node = lapply(atlases, function(atlas) get_fc_nodal(atlas, subj_net_files))
+names(fc_node) = atlases
+
+fc_node_df = sapply(atlases, function(atlas) as.data.frame(t(sapply(fc_node[[atlas]], function(subj) subj$V1))))
+names(fc_node_df) = atlases
+
+fc_mat = lapply(atlases, function(atlas) get_fc_mat(atlas, subj_net_files))
+names(fc_mat) = atlases
+
+fc_edge = lapply(atlases, function(atlas) get_fc_edge(atlas, subj_net_files))
+names(fc_edge) = atlases
+
+fc_edge_df = sapply(atlases, function(atlas) as.data.frame(t(sapply(fc_edge[[atlas]], function(subj) subj))))
+names(fc_edge_df) = atlases
+
+```
+
+
+```{r merge  with gps}
+acc_subj_dx_sum = readRDS("~/Documents/xia_gps/beiwe_output_043020/Results/Group/acc_dx_demo_summary.RDS")
+fpt_fc = list()
+fpt_fc_node = list()
+fpt_fc_edge = list()
+
+for (atlas in atlases){
+  fc_subjs = as.numeric(rownames(fc_com_mean[[atlas]]))
+  fc_com_mean[[atlas]]$BBLID = fc_subjs
+  fc_com_mean[[atlas]]$motion = value(motion_df)
+  fpt_fc[[atlas]] = merge(fc_com_mean[[atlas]], acc_subj_mood_df, by = "BBLID")
+  
+  fc_node_df[[atlas]]$BBLID = fc_subjs
+  fc_node_df[[atlas]]$motion = value(motion_df)
+  fpt_fc_node[[atlas]] = merge(fc_node_df[[atlas]], acc_subj_mood_df, by = "BBLID")
+  
+  fc_edge_df[[atlas]]$BBLID = fc_subjs
+  fc_edge_df[[atlas]]$motion = value(motion_df)
+  fpt_fc_edge[[atlas]] = merge(fc_edge_df[[atlas]], acc_subj_mood_df, by = "BBLID")
+}
+
+get_fc_res = function(com_df){
+  com_df_res = com_df
+  for (i in 1:(dim(com_df)[2]-2)){
+    com_df_res[,i] = lm(com_df[,i] ~ com_df$motion)$residuals
+  }
+    return(com_df_res)
+}
+
+fc_com_mean_res = lapply(fc_com_mean, get_fc_res)
+fpt_fc_res = lapply(fc_com_mean_res, function(df) merge(df, acc_subj_dx_sum, by = "BBLID"))
+```
+
+
+
+```{r calc mean associations}
+atlas = atlases[3]
+fc_nets = names(fc_com_mean[[atlas]])[-c(length(fc_com_mean[[atlas]]),length(fc_com_mean[[atlas]])-1)]
+fpt_fc_p = data.frame(net = rep(NA, length(fc_nets)), p_val = rep(NA, length(fc_nets)))
+fpt_fc_fit = list()
+for (net in fc_nets){
+  net_i = which(fc_nets == net)
+  #fit = lm(get(net)  ~ age + sex +  gps_days + acc_days + motion + accgps, fpt_fc[[atlas]])
+  #fit = gam(accgps  ~ s(age) + sex + gps_days + acc_days  + motion + get(net), fpt_fc[[atlas]], method = "REML")
+  #fit = gam(accgps  ~ s(age) + sex + gps_days + acc_days  + motion + get(net), data = fpt_fc[[atlas]], method = "REML")
+  fit = gam(get(net)  ~ s(age) + sex + gps_days + acc_days  + motion + accgps, data = fpt_fc[[atlas]], method = "REML")
+  fpt_fc_p$net[net_i] = net
+  #fpt_fc_p$p_val[net_i] = summary(fit)[[4]][,4][length(summary(fit)[[4]][,4])]
+  fpt_fc_p$p_val[net_i] = summary(fit)[[4]][6]
+  fpt_fc_fit[[net]] = fit
+}
+
+fpt_fc_p[which(fpt_fc_p$p_val < 0.05),]
+som_pval = fpt_fc_p[grep(glob2rx("*som*"),fpt_fc_p$net),]
+#som_pval = fpt_fc_p[grep(glob2rx("*sm*"),fpt_fc_p$net),]
+
+som_pval$p_val_adjust = p.adjust(som_pval$p_val, "fdr")
+
+som_pval_nolim = som_pval[-5,]
+fpt_fc_p_nolim = fpt_fc_p[-c(5,11,16,20,23,24,25),]
+
+which(p.adjust(som_pval$p_val, "fdr") <0.05)
+
+
+which(p.adjust(fpt_fc_p_nolim$p_val, "fdr") <0.05)
+which(p.adjust(fpt_fc_p$p_val, "fdr") <0.05)
+
+
+fc_nets[net_sig]
+fc_nets[which(fpt_fc_p$p_val < 0.05)]
+sig_fc_fit = gam(som_som  ~ s(age) + sex + gps_days + acc_days  + motion + accgps, data = fpt_fc[[atlas]], method = "REML")
+visreg(sig_fc_fit, 'accgps', gg = T) + theme_cowplot() + xlab("Individual Footprint Distinctiveness") + ylab("Som-Som")
+
+fc_nets_within = fc_nets[c(1,8,14,19,23,26,28)]
+within_cor = data.frame(net = rep(NA, length(fc_nets_within)), p_val = rep(NA, length(fc_nets_within)), rsq = rep(NA, length(fc_nets_within)), r = rep(NA, length(fc_nets_within)))
+within_cor_fit = list()
+for (net in fc_nets_within){
+  net_i = which(fc_nets_within == net)
+  fit = gam(get(net)  ~ s(age) + sex + gps_days + acc_days  + motion + accgps, data = fpt_fc[[atlas]], method = "REML")
+  within_cor$net[net_i] = net
+  within_cor$p_val[net_i] = summary(fit)[[4]][6]
+  within_cor$rsq[net_i] = rsq.partial(fit)$partial.rsq[5]
+  within_cor$r[net_i] = sqrt(within_cor$rsq[net_i]) * sign(fit$coefficients["accgps"])
+  within_cor_fit[[net]] = fit
+}
+
+within_cor$p_val_adjust = p.adjust(within_cor$p_val,"fdr")
+
+nets_cor = data.frame(net = rep(NA, length(fc_nets)), p_val = rep(NA, length(fc_nets)), rsq = rep(NA, length(fc_nets)), r = rep(NA, length(fc_nets)))
+nets_fit = list()
+for (net in fc_nets){
+  net_i = which(fc_nets == net)
+  fit = gam(get(net)  ~ s(age) + sex + gps_days + acc_days  + motion + accgps, data = fpt_fc[[atlas]], method = "REML")
+  nets_cor$net[net_i] = net
+  nets_cor$p_val[net_i] = summary(fit)[[4]][6]
+  nets_cor$rsq[net_i] = rsq.partial(fit)$partial.rsq[5]
+  nets_cor$r[net_i] = sqrt(nets_cor$rsq[net_i]) * sign(fit$coefficients["accgps"])
+  nets_fit[[net]] = fit
+}
+
+
+nets_cor_mat = vector_to_mat(nets_cor$r,method = "half+d")
+nets_p_mat = vector_to_mat(nets_cor$p_val,method = "half+d")
+colnames(nets_cor_mat) = com_names
+rownames(nets_cor_mat) = com_names
+corrplot(nets_cor_mat)
+
+
+corrplot(nets_cor_mat, "color", col = rev(brewer.pal(n = 10, name = "RdBu")), tl.col = "black")
+corrplot(nets_cor_mat, "color", col = rev(brewer.pal(n = 10, name = "RdBu")), tl.col = "black", p.mat = nets_p_mat, insig = "blank")
+
+
+ggplot(within_cor, aes(x=reorder(net, r), y=r, fill = net)) + 
+  geom_bar(stat = "identity",show.legend = F) + theme_cowplot()+ 
+      ylab("Partial R") + xlab("Networks") +
+      scale_x_discrete(labels=c("Visual", "Control", "DorsAttn", "SalVentAttn", "Limbic", "Default","SomMot"))
+```
+
+
+```{r calc nodal associations}
+atlas = atlases[1]
+fpt_fcnode_fit = list()
+fc_nodes = names(fc_node_df[[atlas]])[-c(length(fc_node_df[[atlas]]),length(fc_node_df[[atlas]])-1)]
+fpt_fcnode_p = data.frame(node = rep(NA, length(fc_nodes)), p_val = rep(NA, length(fc_nodes)))
+for (node in fc_nodes){
+  node_i = which(fc_nodes == node)
+  fit = gam(get(node)  ~ s(age) + sex + gps_days + acc_days  + motion + accgps, data = fpt_fc_node[[atlas]], method = "REML")
+  fpt_fcnode_p$node[node_i] = node
+  fpt_fcnode_p$p_val[node_i] = summary(fit)[[4]][6]
+  fpt_fcnode_fit[[node]] = fit
+}
+
+fpt_fcnode_p[which(fpt_fcnode_p$p_val < 0.05),]
+som_pval_node = fpt_fcnode_p[grep(glob2rx("*som*"),fpt_fcnode_p$node),]
+
+som_pval_node[which(som_pval_node$p_val < 0.05),]
+
+som_pval_adjust = p.adjust(som_pval$p_val,"fdr")
+
+
+sig_fc_fit = gam(`som_18`  ~ s(age) + sex + gps_days + acc_days  + motion + accgps, data = fpt_fc_node[[atlas]], method = "REML")
+visreg(sig_fc_fit, 'accgps', gg = T) + theme_cowplot() + xlab("Individual Footprint Distinctiveness") + ylab("Som_18")
+```
+
+
+```{r calc edge associations}
+atlas = atlases[1]
+fpt_fcedge_fit = list()
+fc_edge = names(fc_edge_df[[atlas]])[-c(length(fc_edge_df[[atlas]]),length(fc_edge_df[[atlas]])-1)]
+fpt_fcedge_p = data.frame(edge = rep(NA, length(fc_edge)), p_val = rep(NA, length(fc_edge)))
+for (edge in fc_edge){
+  edge_i = which(fc_edge == edge)
+  fit = gam(get(edge)  ~ s(age) + sex + gps_days + acc_days  + motion + accgps, data = fpt_fc_edge[[atlas]], method = "REML")
+  fpt_fcedge_p$edge[edge_i] = edge
+  fpt_fcedge_p$p_val[edge_i] = summary(fit)[[4]][6]
+  fpt_fcedge_fit[[edge]] = fit
+}
+
+save(fpt_fcedge_p,fpt_fcedge_fit,file = "~/Documents/xia_gps/beiwe_output_043020/Results/Group/schaefer200_edge_gps.RData")
+
+
+fpt_fcedge_p[which(p.adjust(fpt_fcedge_p$p_val, "fdr") < 0.05),]
+som_pval_edge = fpt_fcedge_p[grep(glob2rx("*som*som*"),fpt_fcedge_p$edge),]
+som_pval_edge$p_val_adjust = p.adjust(som_pval_edge$p_val, "fdr")
+
+som_pval_edge[which(som_pval_edge$p_val_adjust < 0.05),]
+
+
+sig_edges = som_pval_edge[which(som_pval_edge$p_val_adjust < 0.05),]$edge
+
+sig_fc_fit = gam(`som129_som122`  ~ s(age) + sex + gps_days + acc_days  + motion + accgps, data = fpt_fc_edge[[atlas]], method = "REML")
+visreg(sig_fc_fit, 'accgps', gg = T) + theme_cowplot() + xlab("Individual Footprint Distinctiveness") + ylab(sig_edges[8])
+
+```
+
+
+```{r Finnn fit}
+atlas = atlases[1]
+fc_edge = names(fpt_fc_edge[[atlas]])[2:(length(names(fpt_fc_edge[[atlas]]))-12)]
+fit_p = list()
+for (subj_i in 1:length(subjects)){
+  data_to_fit = fpt_fc_edge[[atlas]][-subj_i,]
+  fit_p[[atlas]][[subj_i]] = data.frame(edge = rep(NA, length(fc_edge)), p_val_edge = rep(NA, length(fc_edge)), p_val_gps = rep(NA, length(fc_edge)))
+  for (edge in fc_edge){
+    edge_i = which(fc_edge == edge)
+    print(paste("Subject",subj_i,round(edge_i/length(fc_edge),5)))
+    fit_edge = gam(get(edge)  ~ s(age) + sex + gps_days + acc_days  + motion + accgps, data = data_to_fit, method = "REML")
+    fit_accgps = gam(accgps ~ s(age) + sex + gps_days + acc_days  + motion + get(edge), data = data_to_fit, method = "REML")
+    
+    fit_p[[atlas]][[subj_i]]$edge[edge_i] = edge
+    fit_p[[atlas]][[subj_i]]$p_val_edge[edge_i] = summary(fit_edge)[[4]][6]
+    fit_p[[atlas]][[subj_i]]$p_val_gps[edge_i] = summary(fit_accgps)[[4]][6]
+  }
+}
+
+save(atlases, fpt_fc_edge, subjects, file = "~/Documents/xia_gps/beiwe_output_043020/Results/fpt_fc_edge.RData")
+
+```
+
+```{r Finn LOOCV}
+mean_edges = apply(fpt_fc_edge[[atlas]][,2:(length(names(fpt_fc_edge[[atlas]]))-12)],2,sum)
+fpt_fc_edge[[atlas]]$accgps_res = gam(accgps  ~ s(age) + sex + gps_days + acc_days  + motion , data = fpt_fc_edge[[atlas]], method = "REML")$residuals
+
+accpgs_res = data.frame(accgps = fpt_fc_edge[[atlas]]$accgps, accgps_res = fpt_fc_edge[[atlas]]$accgps_res, BBLID = fpt_fc_edge[[atlas]]$BBLID, age = fpt_fc_edge[[atlas]]$age, sex = fpt_fc_edge[[atlas]]$sex, motion = fpt_fc_edge[[atlas]]$motion, gps_days = fpt_fc_edge[[atlas]]$gps_days, acc_days = fpt_fc_edge[[atlas]]$acc_days)
+
+data_to_sum = fpt_fc_edge[[atlas]][,2:(length(names(fpt_fc_edge[[atlas]]))-12)]
+pos_fit = which(mean_edges >0 & fit_p$schaefer200x7[[subj_i]]$p_val_gps < 0.05)
+neg_fit = which(mean_edges <0 & fit_p$schaefer200x7[[subj_i]]$p_val_gps < 0.05)
+pos_fit_sum = apply(data_to_sum[,pos_fit], 1, sum)
+neg_fit_sum = apply(data_to_sum[,neg_fit], 1, sum)
+
+data_fit = data.frame(pos_sum = pos_fit_sum, neg_sum = neg_fit_sum, BBLID = subjects)
+data_fit_beh = merge(data_fit,accpgs_res, by = "BBLID")
+
+
+
+
+
+df_loocv_predict_all = data.frame()
+for (subj_i in 1:length(subjects)){
+  print(subj_i)
+
+  data_train = subset(data_fit_beh, BBLID != subjects[subj_i])
+  data_predict = subset(data_fit_beh, BBLID == subjects[subj_i])
+
+  
+  df_loocv_predict_all[subj_i,"BBLID"] = data_predict$BBLID
+  df_loocv_predict_all[subj_i,"predict_pos"] = predict.gam(gam(accgps ~ s(age) + sex + gps_days + acc_days + motion + pos_sum, data = data_train, method = "REML"),newdata = data_predict)
+  
+  df_loocv_predict_all[subj_i,"predict_neg"] = predict.gam(gam(accgps ~ s(age) + sex + gps_days + acc_days + motion + neg_sum, data = data_train, method = "REML"),newdata = data_predict)
+  
+  df_loocv_predict_all[subj_i,"predict_nosum"] = predict.gam(gam(accgps ~ s(age) + sex + gps_days + acc_days , data = data_train, method = "REML"),newdata = data_predict)
+  
+}
+
+foo = merge(df_loocv_predict_all,data_fit_beh, by = "BBLID")
+```
+
+
+```{r LOOCV ridge}
+# Compute R^2 from true and predicted values
+eval_results <- function(true, predicted) {
+  SSE <- sum((predicted - true)^2)
+  SST <- sum((true - mean(true))^2)
+  R_square <- 1 - SSE / SST
+  RMSE = sqrt(SSE/length(predicted))
+
+  
+  # Model performance metrics
+data.frame(
+  RMSE = RMSE,
+  Rsquare = R_square
+)
+  
+}
+
+
+atlas = 1
+fpt_fc_edge[[atlas]]$accgps_res = gam(accgps  ~ s(age) + sex + gps_days + acc_days  + motion , data = fpt_fc_edge[[atlas]], method = "REML")$residuals
+
+non_edge_var = c(tail(names(fpt_fc_edge[[atlas]]),13),"BBLID")
+edge_vars = names(fpt_fc_edge[[atlas]])[-which(names(fpt_fc_edge[[atlas]]) %in% non_edge_var)]
+edge_vars = edge_vars[grep(glob2rx("*som*som*"),edge_vars)]
+edge_vars = edge_vars[grep(glob2rx("*som*"),edge_vars)]
+ridge_out = data.frame()
+for (i in 1:length(subjects)) {
+  print(i)
+  
+  df_train = fpt_fc_edge[[atlas]][-i,]
+  df_test = fpt_fc_edge[[atlas]][i,]
+  df_train_fit = gam(accgps  ~ s(age) + sex + gps_days + acc_days  + motion , data = df_train, method = "REML")
+  df_train$accgps_res = df_train_fit$residuals
+  
+  x_train = as.matrix(df_train[,edge_vars])
+  y_train = df_train$accgps_res
+  
+  x_test = as.matrix(df_test[,edge_vars])
+  y_test = df_test$accgps - predict(df_train_fit,newdata = df_test)
+  
+  #lambdas <- 10^seq(3, -3, length = 100)
+  cv_ridge = cv.glmnet(x = x_train,y = y_train, alpha = 0, nlambda = 100, nfolds = 10)
+  print(cv_ridge$lambda.min)
+  ridge_reg = glmnet(x_train, y_train, lambda = cv_ridge$lambda.min, alpha = 0, family = 'gaussian')
+
+  
+  
+  predictions_train <- predict(ridge_reg, s = cv_ridge$lambda.min, newx = x_train)
+  
+  predictions_test <- predict(ridge_reg, s = cv_ridge$lambda.min, newx = x_test)
+  
+  ridge_out[i,"predict"] = as.numeric(predictions_test)
+  ridge_out[i,"real"] = y_test
+}
+
+ridge_out_allbrain = ridge_out
+ridge_out_somonly = ridge_out
+ridge_out_sommore = ridge_out
+
+
+
+```
+
+```{r loocv lasso}
+lasso_edge = function(subjects,edge_vars, lambda) {
+  lasso_out = data.frame()
+  for (i in 1:length(subjects)) {
+    df_train = fpt_fc_edge[[atlas]][-i,]
+    df_test = fpt_fc_edge[[atlas]][i,]
+    
+    df_train_fit = gam(accgps  ~ s(age) + sex + gps_days + acc_days  + motion , data = df_train, method = "REML")
+    df_train$accgps_res = df_train_fit$residuals
+    
+    x_train = as.matrix(df_train[,edge_vars])
+    y_train = df_train$accgps_res
+    
+    x_test = as.matrix(df_test[,edge_vars])
+    y_test = df_test$accgps - predict(df_train_fit,newdata = df_test)
+    
+    lasso_reg = glmnet(x_train, y_train, lambda = lambda, alpha = 1, standardize = TRUE)
+    
+    predictions_train <- predict(lasso_reg, s = lambda, newx = x_train)
+    predictions_test <- predict(lasso_reg, s = lambda, newx = x_test)
+    
+    lasso_out[i,"predict"] = as.numeric(predictions_test)
+    lasso_out[i,"real"] = y_test
+  }
+    lasso_cor = cor(lasso_out$predict,lasso_out$real)
+  return(lasso_cor)
+}
+
+
+for (i in 1:length(subjects)){
+  df_train = fpt_fc_edge[[atlas]][-i,]
+  df_test = fpt_fc_edge[[atlas]][i,]
+  df_valid = fpt_fc_edge[[atlas]][i,]
+}
+
+
+
+
+atlas = 1
+non_edge_var = c(tail(names(fpt_fc_edge[[atlas]]),13),"BBLID")
+edge_vars = names(fpt_fc_edge[[atlas]])[-which(names(fpt_fc_edge[[atlas]]) %in% non_edge_var)]
+#som_edge_vars = edge_vars[grep(glob2rx("*som*"),edge_vars)]
+#som_som_edge_vars = edge_vars[grep(glob2rx("*som*som*"),edge_vars)]
+
+
+lasso_out_allbrain = lasso_edge(edge_vars, 0.07)
+lasso_out_sommore = lasso_edge(som_edge_vars)
+lasso_out_somonly = lasso_edge(som_som_edge_vars)
+
+
+ggplot(data = lasso_out_allbrain,aes(x=predict,y = real)) + 
+    geom_point() + theme_cowplot() + geom_smooth(method = lm, colour = "black") + stat_cor(method="pearson") +
+    xlab("Predicted Footprint Distinctiveness ") + ylab("Actual Footprint Distinctiveness ")
+
+
+get_final_lass = function(edge_var, subj_seq){
+  x_all = as.matrix(fpt_fc_edge[[atlas]][subj_seq,edge_var])
+  y_all = fpt_fc_edge[[atlas]]$accgps_res[subj_seq]
+  #cv_lasso = cv.glmnet(x = x_all,y = y_all, nlambda = 100, alpha = 1, standardize = TRUE, nfolds = 10)
+  lasso_reg = glmnet(x_all, y_all, lambda = 0.07, alpha = 1, standardize = TRUE)
+}
+
+lasso_fit_allbrain_beta = get_final_lass(edge_vars,1:41)$beta
+lasso_fit_allbrain_edges = edge_vars[summary(lasso_fit_allbrain_beta)$i]
+
+## bootstrapping
+resample_list = createResample(1:41,times = 1000, list = T)
+lasso_fit_list = list()
+
+lasso_fit_list = lapply(resample_list, function(sub_seq) summary(get_final_lass(edge_vars, sub_seq)$beta))
+
+
+lasso_fit_list_old = lasso_fit_list
+lasso_fit_list = lasso_fit_list007
+
+
+lasso_boot_df = data.frame(edge_i = unique(unlist(sapply(lasso_fit_list, function(x) unlist(x$i)))))
+lasso_boot_df$edge_name = edge_vars[lasso_boot_df$edge_i]
+for (edge_i in lasso_boot_df$edge_i){
+  df_i = which(lasso_boot_df$edge_i == edge_i)
+  edge_x_all = unlist(sapply(lasso_fit_list, function(fit) subset(fit,i == edge_i)$x))
+  lasso_boot_df$non_zeros[df_i] = length(edge_x_all)
+  #edge_x_all = c(edge_x_all,rep(0,1000-length(edge_x_all)))
+
+  lasso_boot_df$x_mean[df_i] = median(edge_x_all)
+  lasso_boot_df$x975[df_i] = quantile(edge_x_all,.975)
+  lasso_boot_df$x025[df_i] = quantile(edge_x_all,.025)
+  lasso_boot_df$x75[df_i] = quantile(edge_x_all,.75)
+  lasso_boot_df$x25[df_i] = quantile(edge_x_all,.25)
+  #lasso_boot_df$xmin[df_i] = quantile(edge_x_all,.25) - 1.5* (quantile(edge_x_all,.75)-quantile(edge_x_all,.25))
+  #lasso_boot_df$xmax[df_i] = quantile(edge_x_all,.75) + 1.5* (quantile(edge_x_all,.75)-quantile(edge_x_all,.25))
+  lasso_boot_df$xmin[df_i] = min(edge_x_all)
+  lasso_boot_df$xmax[df_i] = max(edge_x_all)
+}
+
+lasso_boot_df$sig = sign(lasso_boot_df$x975) * sign(lasso_boot_df$x025)
+subset(lasso_boot_df, sig == 1)
+
+ggplot(lasso_boot_df[head(order(-lasso_boot_df$non_zeros),5),], aes(x = reorder(edge_name,-x_mean), y = x_mean)) + geom_boxplot(aes(ymin = xmin, lower = x25, middle = x_mean, upper = x75, ymax = xmax), stat = "identity") + theme_cowplot() + xlab("") + ylab("Feature Weight") +
+  geom_hline(yintercept = 0, colour = "grey", linetype = "dashed")
+
+
+
+## permutation
+lasso_edge_perm = function(edge_vars) {
+  lasso_out = data.frame()
+  #fpt_fc_edge[[atlas]]$accgps_res = fpt_fc_edge[[atlas]]$accgps_res[sample(length(fpt_fc_edge[[atlas]]$accgps_res))]
+  for (i in 1:length(subjects)) {
+    #print(i)
+    
+    df_train = fpt_fc_edge[[atlas]][-i,]
+    df_test = fpt_fc_edge[[atlas]][i,]
+    
+    df_train_fit = gam(accgps  ~ s(age) + sex + gps_days + acc_days  + motion , data = df_train, method = "REML")
+    df_train$accgps_res = df_train_fit$residuals
+    
+    x_train = as.matrix(df_train[,edge_vars])
+    y_train = df_train$accgps_res
+    y_train = sample(y_train)
+    
+    x_test = as.matrix(df_test[,edge_vars])
+    y_test = df_test$accgps - predict(df_train_fit,newdata = df_test)
+      
+    cv_lasso = cv.glmnet(x = x_train,y = y_train, nlambda = 100, alpha = 1, standardize = TRUE, nfolds = 10)
+    print(cv_lasso$lambda.min)
+    lasso_reg = glmnet(x_train, y_train, lambda = cv_lasso$lambda.min, alpha = 1, standardize = TRUE)
+  
+    
+    predictions_train <- predict(lasso_reg, s = cv_lasso$lambda.min, newx = x_train)
+    
+    predictions_test <- predict(lasso_reg, s = cv_lasso$lambda.min, newx = x_test)
+    
+    lasso_out[i,"predict"] = as.numeric(predictions_test)
+    lasso_out[i,"real"] = y_test
+    
+  }
+  print(cor.test(lasso_out$real,lasso_out$predict)$estimate)
+  return(lasso_out)
+}
+
+lasso_perm_007 = list()
+for (i in 1:30){
+  print(i)
+  lasso_perm_007[[i]] = lasso_edge_perm(edge_vars)
+}
+
+ridge_perm_25 = list()
+for (i in 1:1000){
+  print(i)
+  ridge_perm_25[[i]] = lasso_edge_perm(edge_vars)
+}
+ridge_perm_df_25 = data.frame(perm = unlist(ridge_perm_25))
+
+
+lasso_perm_df = data.frame(perm = sapply(lasso_perm,function(x) cor.test(x$real,x$predict)$estimate))
+lasso_perm_df_007 = data.frame(perm = unlist(lasso_perm_007))
+
+
+
+ggplot(data.frame(perm=lasso_perm), aes(x=perm)) + 
+  geom_histogram(fill = "light blue") + theme_cowplot() +
+  geom_vline(xintercept= cor(lasso_out$predict,lasso_out$real), color = "red") +
+  xlab("Correlation between actual and predicted")
+  
+                         
+```
+
+
+```{r vitualize}
+lasso_sommore_mat = matrix(0,200,200)
+lasso_fit_sommore_beta_mat = vector_to_mat(edge_vars)
+com_names = read.table(file.path(atlas_path,atlas_now,paste0(atlas_now,"CommunityNames.txt")))$V1
+com_nums = read.table(file.path(atlas_path,atlas_now,paste0(atlas_now,"CommunityAffiliation.1D")))$V1
+node_names = read.table(file.path(atlas_path,atlas_now,paste0(atlas_now,"NodeNames.txt")))$V1
+
+
+for (i in 1:length(lasso_fit_sommore_edges)){
+  lasso_sommore_mat[which(lasso_fit_sommore_beta_mat == lasso_fit_sommore_edges[i])] = summary(lasso_fit_sommore_beta)$x[i]
+}
+
+
+
+rownames(lasso_sommore_mat) = circle_df$node
+colnames(lasso_sommore_mat) = circle_df$node
+
+
+
+group_names = structure(com_names[com_nums], names = node_names)
+grid.col = structure(brewer.pal(n = 7, name = 'Set3')[com_nums], names = node_names)
+
+lasso_sommore_mat = upper.tri.remove(lasso_sommore_mat,remove.val = 0)
+
+circos.clear()
+circos.par(start.degree = 90)
+chorddiag(lasso_sommore_mat, groupNames = circle_df$node, categoryNames= c("LH","RH"),groupColors = brewer.pal(n = 7, name = 'Set3')[com_nums] , showTicks =F, showGroupnames =T)
+
+circle_df = data.frame(hemi = c(rep("LH",100),rep("RH",100)), com = paste(word(node_names, 2, sep = "_")), node =paste(word(node_names, 3, sep = "_")))
+
+
+
+circos.initializeWithIdeogram(plotType = NULL)
+
+circos.trackPlotRegion(ylim = c(0, 1), panel.fun = function(x, y) {
+    chr = get.cell.meta.data("sector.index")
+    xlim = get.cell.meta.data("xlim")
+    ylim = get.cell.meta.data("ylim")
+    circos.rect(xlim[1], 0, xlim[2], 0.5,
+        col = rgb(runif(1), runif(1), runif(1)))
+    circos.text(mean(xlim), 0.9, chr, cex = 0.5, facing = "clockwise", niceFacing = TRUE)
+}, bg.border = NA)
+
+circos.clear()
+#track hemisphere
+circos.par(cell.padding = c(0.02, 0, 0.02, 0), start.degree = 90, "track.height" = 0.1)
+circos.initialize(circle_df$node, xlim = c(0, 1))
+circos.track(circle_df$node, ylim = c(0, 1))
+
+#track commjnity
+circos.par(start.degree = 90, "track.height" = 0.1)
+circos.initialize(circle_df$com, xlim = c(0, 1))
+circos.track(circle_df$com, ylim = c(0, 1))
+
+#track node
+
+
+
+```

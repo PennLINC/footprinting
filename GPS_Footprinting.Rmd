@@ -1,0 +1,1610 @@
+---
+title: "GPS Footprinting"
+output:
+  html_notebook:
+    includes:
+      after_body: footer.html
+    toc: yes
+    toc_float:
+      toc_collapsed: yes
+---
+`r Sys.time()`
+
+Author: [Cedric Huchuan Xia](https://www.pennlinc.io/team/Cedric-Huchuan-Xia) ([email](hxia@upenn.edu), [github](https://github.com/cedricx/))
+
+Affiliation: Penn Lifespan Informatics and Neuroimaging Center ([PennLINC](pennlinc.io)) 
+
+***
+
+
+This *Mobile Footprinting Project* is inspired by [Finn et al. Nat Neuro  (2015)](https://www.nature.com/articles/nn.4135) and [Kaufmann et al. Nat Neuro (2015)](https://www.nature.com/articles/s41593-019-0471-7). These authors studied how personal differences in functional brain connectivity can identify individuals, mature during development, alter in neuropsychiatric illness, and differ between genders. The authors referred to these individual differences as *brain fingerprinting*.
+
+> Here, we apply the fingerprinting technique to highly sampled mobile sensing data in a clinical sample of youth. We are interested in how their individual mobility patterns can distinguish one another's identity, differ between genders, and alter in psychopathological groups. In other words, can our footprint tell us apart and something about our behavior? 
+
+GPS data preprocessing was performed according to [Ian Barnett's imputation algorithm](https://github.com/ianjamesbarnett/SmartphoneSensorPipeline), originally published in [Biostatistics (2020)](https://academic.oup.com/biostatistics/article-abstract/21/2/e98/5145908). Accelerometer data was performed according to [RAPIDS](https://www.rapids.science/latest/features/phone-accelerometer/).
+
+### 1. Setup Environment 
+```{r load libraries, message=FALSE}
+require(ggplot2)
+require(summarytools)
+require(cowplot)
+require(caret)
+require(corrplot)
+require(RColorBrewer)
+require(vembedr)
+require(Rmisc)
+require(varian)
+require(patchwork)
+require(plotly)
+require(Metrics)
+require(dplyr)
+require(ggpubr)
+require(mosaic)
+require(openxlsx)
+require(visreg)
+require(factoextra)
+require(rstatix)
+require(gridExtra)
+require(colorspace)
+require(grid)
+require(data.table)
+require(psych)
+source('~/Documents/GitHub/SmartphoneSensorPipeline/Extra/plotting_functions.R')
+```
+
+
+```{r define paths}
+project_path = "~/Documents/xia_gps/"
+data_path = file.path(project_path,"beiwe_output_043020")
+gps_df_path = file.path(data_path,"Processed_Data/Group/feature_matrix.txt")
+```
+
+### 2. GPS Features
+The current data has `r length(unique(gps_df$IID))` subjects, consisting of `r dim(gps_df)[1]` total days, and `r length(colnames(gps_df))-2` GPS features. To conserve battery life, a subject's GPS coordinates were tracked for in a 2-min-on and 18-min-off cycle everyday using their own mobile device via the [Beiwe platform](https://www.beiwe.org). We used [Ian Barnett's algorithm](https://github.com/ianjamesbarnett/SmartphoneSensorPipeline) to impute the missing data during the off cycles. Assuming no more data was missing due to various factors, one would generate `r 2*3*24` mins of GPS data per day, or `r 2/20*100`% of total minutes in a day. 
+
+As you can see from the figure below, we can nicely reconstruct an individuals' mobility trajectory from these data.
+<center>
+![gps_track](./gps_track_sample.png)
+**Figure 1: A weekly view of a subject's mobility pattern**
+</center>
+
+For an even more intuitive view of the GPS data, take a look at the video here:
+
+<center>
+```{r echo=FALSE}
+embed_url("https://youtu.be/KobESgtfoOo")
+```
+</center>
+
+
+ <br><br><br><br>
+
+From these GPS traces, we extracted daily mobility features, such as *max home distance*, *circadian routine*, *probability of pauses*, as described in [Barnett et al., Biostatistics (2020)](https://academic.oup.com/biostatistics/article-abstract/21/2/e98/5145908) and defined mathematically in its [supplementary material](https://drive.google.com/open?id=1jHFJLXjUSwoserN5tPtA--h9GEcVfZ10).
+
+To get a flavor of what these features look like, the first six days of GPS data for a subject are attached below. 
+```{r read_gps}
+gps_df = read.table(gps_df_path,header = T, dec = ",", )[,c(1,2,97:111)]
+
+#Define the column types
+gps_df$Date = as.Date(gps_df$Date)
+gps_df[,3:dim(gps_df)[2]] = apply(gps_df[,3:dim(gps_df)[2]], 2, function(x) as.numeric(x))
+head(gps_df)
+
+```
+
+### 3. Exclude Data
+The first step before further analysis is to exclude data points (days) that had excessive amount of data missing. Here is a historgram of the minutes missing for all `r dim(gps_df)[1]` total days. 
+
+```{r echo=TRUE, fig.height=4, fig.width=10, message=FALSE, warning=FALSE}
+p=minMiss_histplot(gps_df,200, "All Data")
+
+ggplotly(p)
+```
+**Figure 2: Minutes missing for all collected days.** There are `r dim(gps_df)[1]` total days. Dashlines indicate the corresponding percentile.
+
+
+
+
+#### 3a.  remove first and last days
+First, we will remove the first and last days from each subject, because the application was installed during mid-day at the beginning of the study and uninstalled mid-day at the end of the study. 
+
+```{r 1st_last_days}
+# loop through each subj to remove 1st and last days of gps data
+gps_df_clean = data.frame() #initiate a df
+for (subj in unique(gps_df$IID)){ #loop through each subj
+  gps_df_subj <- subset(gps_df, IID == subj) #get gps_df per subject
+  gps_df_subj <- gps_df_subj[2:(dim(gps_df_subj)[1]-1),] #remove the 1st and last days
+  gps_df_clean <- rbind(gps_df_clean,gps_df_subj) #combine all subjs
+}
+```
+
+This step removed `r dim(gps_df)[1] - dim(gps_df_clean)[1]` days. Now, dataset has `r length(unique(gps_df_clean$IID))` subjects, consisting of `r dim(gps_df_clean)[1]` total days, and `r length(colnames(gps_df_clean))-2` GPS features.
+
+```{r fig.width=10, fig.height=4, echo=FALSE}
+p=minMiss_histplot(gps_df_clean,200, "After Removing 1st and Last Days")
+ggplotly(p)
+```
+**Figure 3: Minutes missing after removing the first and last days of each subject.** There are `r dim(gps_df_clean)[1]` total days. Dashlines indicate the corresponding percentile.
+
+#### 3b.  remove days at the sensitivity threshold
+Next, we are removing the days with excessive data missingness. This is of course an arbitrary step. Therefore we will conduct a sensitivity analysis of the missingness threshold we set by performing the analysis across multiple different thresholds. For now, the current sensitivity cutoff is set at `r sensitivity_cutoff`, which amounts to only excluding those with `r sensitivity_cutoff/1440*100`% of GPS missing.
+
+```{r results='asis'}
+sensitivity_cutoff = 1440 # this controls the cutoff threshold
+gps_df_clean2 = subset(gps_df_clean, MinsMissing < sensitivity_cutoff)
+```
+
+This step removed `r dim(gps_df_clean)[1] - dim(gps_df_clean2)[1]` days. Now, dataset has `r length(unique(gps_df_clean2$IID))` subjects, consisting of `r dim(gps_df_clean2)[1]` total days, and `r length(colnames(gps_df_clean2))-2` GPS features.
+
+```{r fig.width=10, fig.height=4, echo=FALSE}
+p = minMiss_histplot(gps_df_clean2,200, paste("After Removing Missing Greater than ",sensitivity_cutoff))
+ggplotly(p)
+```
+**Figure 4: Minutes missing after removing days with all data missing.** There are `r dim(gps_df_clean2)[1]` total days. Dashlines indicate the corresponding percentile.
+
+
+```{r fig.width=10, fig.height=4, echo=FALSE}
+p = minMiss_histplot(subset(gps_df_clean2,MinsMissing>=1296),200, "Zoom In Plot")
+ggplotly(p)
+```
+**Figure 5: A Zoom-in plot of minutes missing distribution after removing days with all data missing.** There are `r dim(gps_df_clean2)[1]` total days. Dashlines indicate the corresponding percentile.
+
+```{r investigate individual data quality, fig.align="center", message=FALSE, warning=FALSE}
+subj_minmissing = gps_df_clean2 %>% group_by(IID) %>% summarise(mean = mean(MinsMissing), n = n())
+
+subj_minmissing_plot = ggplot(subj_minmissing) + 
+  geom_point(aes(x = reorder(IID, mean), y = (1440-mean)/(1440-1296))) + 
+   theme_cowplot() + 
+  labs(title = "Data Completeness by Subject", 
+  x = "Subjects", y = "Data Completeness") + scale_y_continuous(labels = scales::percent, limits=c(0,1)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8), plot.title = element_text(hjust = 0.5))
+ggplotly(subj_minmissing_plot)
+```
+
+
+
+
+
+
+### 4. Random Data Partitions
+
+To operationalize individual footprinting prediction, we randomly split each individual's available GPS data to two half partitions for `r part_times` times. We used the features from the first half to determine if we can identify the same individual using their data in the second unseen half. Again, to avoid any (un)lucky random splits, we repeated data partition `r part_times` times.
+
+
+```{r COVID analysis}
+gps_df_clean2_covid = gps_df_clean2[gps_df_clean2$Date > as.Date("2020-3-10"),]
+gps_df_clean2_31020 = gps_df_clean2[gps_df_clean2$Date <= as.Date("2020-3-10"),]
+
+gps_df_clean2 = gps_df_clean2_31020
+
+`%notin%` <- Negate(`%in%`)
+gps_df_clean2_other = subset(gps_df_clean2, IID %notin% unique(gps_df_clean2_covid$IID))
+
+gps_df_clean2_covid_all = rbind(gps_df_clean2_other,gps_df_clean2_covid)
+
+acc_subj_31020  
+acc_time_31020 
+
+acc_subj_32320 
+acc_time_32320  
+
+acc_subj_all  
+acc_time_all 
+
+acc_subj_covid = acc_subj
+acc_time_covid = acc_time
+
+plot(acc_subj_all,acc_subj_31020) +abline(coef = c(0,1)) + abline(coef = c(0.93,0)) + abline(v = 0.882) + abline(h =0.62) + abline(v =0.824) + abline(h =0.05) + abline(v =0.808)
+
+plot(acc_subj_all,acc_subj_covid) + abline(coef = c(0,1)) 
+subj_days_all = gps_df_clean2 %>% group_by(IID) %>% dplyr::tally(name = "days")
+subj_days_covid = gps_df_clean2_covid_all %>% group_by(IID) %>% dplyr::tally(name = "days")
+subj_days_31020 = gps_df_clean2_31020 %>% group_by(IID) %>% dplyr::tally(name = "days")
+
+```
+
+
+```{r}
+set.seed(510)
+make_subj_seq = function(gps_df_clean2,part_times) {
+  subj_seq = list()
+  for (subj in unique(gps_df_clean2$IID)){
+    subj_data = subset(gps_df_clean2, IID==subj)
+    if (dim(subj_data)[1] >5) {
+    subj_seq[[subj]] <-createDataPartition(subj_data$IID,times = part_times, p =0.5)
+    }
+  }
+  return(subj_seq)
+}
+part_times = 100
+subj_seq = make_subj_seq(gps_df_clean2, part_times)
+
+```
+
+
+### 5. Build Correlation Matrix
+
+Here, similar to [Finn et al. Nat Neuro  (2015)](https://www.nature.com/articles/nn.4135) and [Kaufmann et al. Nat Neuro (2015)](https://www.nature.com/articles/s41593-019-0471-7), we built a Pearson correlation matrix among `r length(colnames(gps_df_clean2))-2` available GPS features. Below is an illustrative sample of the variables and their correlations.
+
+```{r example_cor_fig, fig.width=3, fig.width=3, fig.align="center"}
+# an example of subj 1, and first half
+example_data = gps_df_clean2[subj_seq$`16xv6ko1`$Resample0001,3:17]
+gps_cor = rquery.cormat(example_data, type = "full")
+
+```
+**Figure 6: Correlation matrix of GPS features for a subject.**
+
+
+We then calculated the feature matrix for all `r length(unique(gps_df_clean2$IID))` subjects in the dataset, seperately for each half data partition, and for each random split. 
+
+```{r create feature matrix for everyone, warning=FALSE}
+make_feature_matrix = function(gps_df, subj_seq, range) {
+  subj_mat_1 = list()
+  subj_mat_2 = list()
+  for (subj in names(subj_seq)){
+    print(subj)
+    subj_data = subset(gps_df, IID==subj)
+    subj_mat_1[[subj]] = lapply(subj_seq[[subj]], function(list) rquery.cormat(subj_data[list,range], type = "flatten", graph = F)$r)
+    subj_mat_2[[subj]] = lapply(subj_seq[[subj]], function(list) rquery.cormat(subj_data[-list,range], type = "flatten", graph = F)$r)
+  }
+  return(list(subj_mat_1 = subj_mat_1, subj_mat_2 = subj_mat_2 ))
+}
+
+gps_clean2_feature = make_feature_matrix(gps_df_clean2, subj_seq, 3:17 )
+```
+
+```{r visualization of feature correlations across subjects}
+gps_wide_matrix = data.frame()
+subj_days = gps_df_clean2 %>% group_by(IID) %>% dplyr::tally(name = "Days Collected")
+for (subj in arrange(subj_days,`Days Collected`)$IID){
+  #if ((subj %in% subj_days$IID[which(subj_days$`Days Collected`<=10)]) == T) {
+    for (part in 1:5){
+      half_1 = gps_clean2_feature$subj_mat_1[[subj]][[part]]$cor
+      half_2 = gps_clean2_feature$subj_mat_2[[subj]][[part]]$cor
+      half_1_half_2 = c(half_1,half_2)
+      gps_wide_matrix = rbind(gps_wide_matrix,half_1)
+      gps_wide_matrix = rbind(gps_wide_matrix,half_2)
+      }
+    #}
+}
+
+gps_wide_matrix = t(gps_wide_matrix)
+gps_corplot = rquery.cormat(gps_wide_matrix, type = "full",graph=FALSE)
+gps_corplot$subj = arrange(subj_days,`Days Collected`)$IID
+
+levelplot(gps_corplot$r,scales=list(draw=FALSE),col.regions = rev(rainbow(1000))[-c(1:20)], region =T, ylab.right = "Pearson correlation", main=list(label='GPS Feature Similarity'),xlab="",ylab="")
+```
+
+### 6. Match Target
+
+Next we tried to match each target, defined by one subject's feature matrix in the first half, to a feature matrix in the second half in the same random split. If the same individual's feature matrix in the second half had the highest correlation among all subjects, then we assigned the match result 1, indicating a succussful match, otherwise 0, indicating an unsccussful match.
+
+```{r calc match cor}
+# creating a "database" against which target is to be matched with
+subj_mat_1 = gps_clean2_feature$subj_mat_1
+subj_mat_2 = gps_clean2_feature$subj_mat_2
+
+calc_match_cor = function(subj_mat_1,subj_mat_2) {
+  part_times = length(subj_mat_1[[1]])
+  database = list() 
+  for (time in 1:part_times) {
+      database[[time]] = lapply(subj_mat_2, function(subjmat) subjmat[[time]]$cor)
+  }
+  
+    # match target to database
+    match_cor = list()
+    for (subj1 in names(subj_mat_1)){ #loop through each subj
+      # create a list of target across partitions
+      target_list = lapply(subj_mat_1[[subj1]], function(part) part$cor)
+      # create a match list
+      for (time in 1:part_times){
+        target_subj_time = target_list[[time]] #loop through each partition
+        for (subj2 in names(subj_mat_2)){ #loop everyone in 2nd half
+          data_subj_time = subj_mat_2[[subj2]][[time]]$cor
+          match_cor[[subj1]][[as.character(time)]][[subj2]] = cor(target_subj_time,data_subj_time,use = "na.or.complete")
+        }
+      }
+    }
+  return(match_cor)
+}
+
+match_cor = calc_match_cor(subj_mat_1,subj_mat_2)
+
+```
+
+
+By tallying up all the successful and unsuccessful matchs in each of the `r part_times` random splits, we calculated a distribution of match accuracy.
+
+```{r calc accuracy by partition}
+calc_acc_time=function(match_cor,method = "max") {
+  acc_time = array()
+  part_times = length(match_cor[[1]])
+  for (time in 1:part_times){
+    acc_time[time] = 0
+    for (subj in names(subj_mat_1)){
+      if (method == "max"){
+        position = which.max(unlist(match_cor[[subj]][[as.character(time)]]))
+      } 
+      else if (method == "min"){
+        position = which.min(unlist(match_cor[[subj]][[as.character(time)]]))
+      }
+      
+      predicted_subj = names(subj_mat_1)[position]
+      if (predicted_subj == subj) {
+        acc_time[time] = acc_time[time] + 1
+      }
+    }
+  }
+  acc_time = acc_time/length(names(subj_mat_1))
+  return(acc_time)
+}
+acc_time = calc_acc_time(match_cor, "max")
+```
+
+Over the `r part_times` random splits, the mean match accuracy was `r round(mean(acc_time),4)*100`%, with a standard deviation of `r round(sd(acc_time),4)*100`%, high of `r round(max(acc_time),4)*100`%, and low of `r round(min(acc_time),4)*100`%, (95%CI: `r round(CI(acc_time)['lower'],2)`-`r round(CI(acc_time)['upper'],2)`).
+
+```{r plot accuracy by partition histogram, fig.width=8, fig.height=4}
+p_time_cor = hist_chx(acc_time, bins = 16, title = paste("Covariance Features: \n Average Accuracy Across",part_times,"Data Partitions"), xaxis = "Prediction Accuracy", yaxis = "Count")
+ggplotly(p_time_cor)
+```
+**Figure 7: Match accuracy distributon across `r part_times` data splits.** Mean match accuracy was `r round(CI(acc_time)['mean'],2)` (95%CI: `r round(CI(acc_time)['lower'],2)`-`r round(CI(acc_time)['upper'],2)`)
+
+
+```{r calc accuracy by subj}
+calc_acc_subj = function(match_cor, method = "max"){
+  acc_subj = array()
+  part_times = length(match_cor[[1]])
+  for (subj in names(subj_mat_1)){
+    acc_subj[subj] = 0
+    for (time in 1:part_times){
+      if (method == "max"){
+        position = which.max(unlist(match_cor[[subj]][[as.character(time)]]))
+      } 
+      else if (method == "min"){
+        position = which.min(unlist(match_cor[[subj]][[as.character(time)]]))
+      }
+      predicted_subj = names(subj_mat_1)[position]
+      if (predicted_subj == subj) {
+        acc_subj[subj] = acc_subj[subj] + 1
+      }
+    }
+  }
+  acc_subj = acc_subj/part_times
+  acc_subj = acc_subj[-1]
+  return(acc_subj)
+}
+acc_subj = calc_acc_subj(match_cor)
+```
+
+
+In addition to the match accuracy across subjects, we also calculated the match accuracy for each individual. Across the `r length(unique(gps_df_clean2$IID))` subjects, the mean match accuracy was `r round(mean(subj_df$y),4)*100`%, with a standard deviation of `r round(sd(subj_df$y),4)*100`%, high of `r round(max(subj_df$y),4)*100`%, and low of `r round(min(subj_df$y),4)*100`%.
+
+```{r plot accuracy by subjects, fig.width=8, fig.height=4}
+subj_scatter  = function(gps_df, acc_subj_vector, method){
+  subj_df <- data.frame(x=names(subj_seq))
+  subj_df$y = acc_subj_vector
+  subj_df = subj_df[order(subj_df$y),]
+  subj_acc_plot = ggplot(subj_df) + 
+  geom_point(aes(x = reorder(x, y), y = y)) + 
+   theme_cowplot() + 
+    labs(title = paste(method,"Features \n Subject Level Accuracy Across",part_times,"Data Partitions"), 
+       x = "Subjects", y = "Prediction Accuracy") +
+   theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8), plot.title = element_text(hjust = 0.5))
+  return(subj_acc_plot)
+}
+
+subj_acc_plot = subj_scatter(gps_df_clean2,acc_subj, "Correlated")
+
+ggplotly(subj_scatter(gps_df_clean2,acc_subj, "Correlated"))
+```
+**Figure 8: Match accuracy distributon across `r length(unique(gps_df_clean2$IID))` subjects.** Mean match accuracy was `r round(mean(subj_df$y),4)*100`%, with a standard deviation of `r round(sd(subj_df$y),4)*100`%, high of `r round(max(subj_df$y),4)*100`%, and low of `r round(min(subj_df$y),4)*100`%. This shows dramatic differences in individual *footprinting distinctiveness*.
+
+
+### 7. Permutation Test
+
+To assess the statistical significance of the results above, we conducted a non-parametric permutation test. To do this, we randomly scrambled pair-wise subject-to-day linkage. We repeated this process `r perm_time` times, and followed the same procedure as above to obtain a null distribution of average match accuracy across sample, and for each individual.
+
+```{r calc permutation accuracy, echo=TRUE, message=FALSE, warning=FALSE}
+gps_df_perm = gps_df_clean2
+perm_time = 1000
+perm_acc_time = list()
+perm_acc_subj = list()
+for (i in 1:perm_time) {
+  perm_part_times = 1
+  print(paste("processing ...", i,"..."))
+  gps_df_perm$IID = sample(gps_df_perm$IID)
+  perm_subj_seq = make_subj_seq(gps_df_perm, part_times = perm_part_times)
+  perm_gps = make_feature_matrix(gps_df_perm,perm_subj_seq,3:17)
+  perm_mat_1 = perm_gps$subj_mat_1
+  perm_mat_2 = perm_gps$subj_mat_2
+  perm_match_cor = calc_match_cor(perm_mat_1,perm_mat_2)
+  perm_acc_time[[i]] = calc_acc_time(perm_match_cor)
+  perm_acc_subj[[i]] = calc_acc_subj(perm_match_cor)
+}
+```
+
+
+Over the `r perm_time` permutations, the mean match accuracy was `r round(mean(perm_acc_time_all),4)*100`%, with a standard deviation of `r round(sd(perm_acc_time_all),4)*100`%, high of `r max(mean(perm_acc_time_all),4)*100`%, and low of `r min(mean(perm_acc_time_all),4)*100`%.(95%CI: `r round(CI(perm_acc_time_all)['lower'],2)`-`r round(CI(perm_acc_time_all)['upper'],2)`)
+
+```{r combine partition permutation results, fig.width=8, fig.height=4}
+perm_acc_time_all = unlist(perm_acc_time)
+q_time_cor = hist_chx(perm_acc_time_all, bins = 8, title = paste("Average Accuracy Across",length(perm_acc_time_all),"Permutations"), xaxis = "Prediction Accuracy", yaxis = "Count")
+ggplotly(q_time_cor)
+```
+**Figure 9: Match accuracy distributon across `r perm_time` permutations.** Mean match accuracy in permutation was `r round(CI(perm_acc_time_all)['mean'],2)` (95%CI: `r round(CI(perm_acc_time_all)['lower'],2)`-`r round(CI(perm_acc_time_all)['upper'],2)`). This null distribution does not overlapp with the distributon using real data (**Fig.7**) at all.
+
+
+We also calculated null distribution of match accuracy for each subject. Over the `r perm_time` permutations, the mean match accuracy was `r round(mean(subj_df$y_perm),4)*100`%, with a standard deviation of `r round(sd(subj_df$y_perm),4)*100`%, high of `r round(max(subj_df$y_perm),4)*100`%, and low of `r round(min(subj_df$y_perm),4)*100`%.
+
+```{r combine subj permutation analysis}
+perm_subj = list()
+for (subj in subj_acc_plot$data$x) {
+  perm_subj$val[[subj]] = sapply(perm_acc_subj, function(perm) perm[which(names(perm) == subj)])
+  perm_subj$hist[[subj]] = hist_chx(perm_subj[[subj]]$val, bins = 8, title = paste(subj,": Accuracy Across \n",perm_time,"Permutations"), xaxis = "Prediction Accuracy", yaxis = "Count")
+  perm_subj$acc[[subj]] = sum(perm_subj$val[[subj]])/perm_time
+}
+```
+
+```{r plot subj analysis with perm, fig.width=8, fig.height=4}
+subj_df <- data.frame(x=names(subj_seq))
+subj_df$y = acc_subj
+subj_df$y_perm = unlist(perm_subj$acc)
+subj_df = subj_df[order(subj_df$y),]
+p_subj_cor_perm = ggplot(subj_df, aes(x = reorder(x, y), y = value)) + 
+  geom_point(aes(y = y, col = "subject data")) + 
+  geom_point(aes(y = y_perm, col = "permutation")) +
+  theme_cowplot() + 
+  labs(title = paste("Cor Features \n Subject Level Accuracy Across",part_times,"Data Partitions"), 
+       x = "Subjects", y = "Prediction Accuracy") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8), plot.title = element_text(hjust = 0.5))
+ggplotly(p_subj_cor_perm)
+```
+**Figure 8: Match accuracy null distributon across `r length(unique(gps_df_clean2$IID))` subjects.** Mean match accuracy in permutation was `r round(mean(subj_df$y_perm),4)*100`%, with a standard deviation of `r round(sd(subj_df$y_perm),4)*100`%, high of `r round(max(subj_df$y_perm),4)*100`%, and low of `r round(min(subj_df$y_perm),4)*100`%. While individuals exhibited marked differences in footprinting distinctivenss, the subject with the lowest prediction accuracy was still statistically significant against the permutation test (i.e. for subject `r subj_df$x[1]`: data: `r round(min(subj_df$y),4)*100` % vs. permutation: `r round(min(subj_df$y_perm),4)*100`%).
+
+
+### 8. Mean Features
+
+We calculated the `mean` of each GPS feature as a metric of feature variability. Similar to above, we calculated `mean` separately for each data partition and for each individual.
+
+```{r calc mean GPS features}
+mean_gps = function(gps_df){
+  mean_list = sapply(3:17,function(i) mean(gps_df[,i],na.rm=T))
+  names(mean_list) = colnames(gps_df)[3:17]
+  return(mean_list)
+}
+
+make_feature_mean = function(gps_df, subj_seq) {
+  subj_mat_1 = list()
+  subj_mat_2 = list()
+  for (subj in unique(gps_df$IID)){
+    subj_data = subset(gps_df_clean2, IID==subj)
+    subj_mat_1[[subj]] = lapply(subj_seq[[subj]], function(list) mean_gps(subj_data[list,]))
+    subj_mat_2[[subj]] = lapply(subj_seq[[subj]], function(list) mean_gps(subj_data[-list,]))
+  }
+  return(list(subj_mat_1 = subj_mat_1, subj_mat_2 = subj_mat_2 ))
+}
+
+gps_clean2_mean_feat = make_feature_mean(gps_df_clean2, subj_seq)
+```
+
+```{r warp mean feature list to data frame, fig.height=6, echo=F}
+mean_df = list()
+for (subj in unique(gps_df$IID)) {
+  mean_df[[subj]] = data.frame(matrix(NA, part_times, length(colnames(gps_df_clean))-2))
+  for (i in 1:part_times){
+    mean_df[[subj]][i,] = gps_clean2_mean_feat$subj_mat_1[[subj]][[i]]
+  }
+  colnames(mean_df[[subj]]) = colnames(gps_df_clean[3:17])
+}
+
+mean_plots = list()
+for (gps_ft in colnames(gps_df_clean[3:17])){
+  mean_plots[[gps_ft]] = hist_chx(sapply(mean_df, function(df) df[1,gps_ft]), title = gps_ft, xaxis = "Mean", yaxis = "count")
+}
+
+Reduce(`+`, mean_plots)
+```
+**Figure 9: Feature mean across all subjects**. The histogram are for data in the first random half split.
+
+
+
+### 9. Variability Features
+We calculated the `root mean square of successive differences` or `RMSSD` of each GPS feature as a metric of feature variability. Similar to above, we calculated `RMSSD` separately for each data partition and for each individual.
+
+```{r calculate variability features}
+rmssd_gps = function(gps_df){
+  rmssd_list = sapply(3:17,function(i) rmssd_id(gps_df[,i], gps_df$IID,long=F))
+  names(rmssd_list) = colnames(gps_df)[3:17]
+  return(rmssd_list)
+}
+
+make_feature_rmssd = function(gps_df, subj_seq) {
+  subj_mat_1 = list()
+  subj_mat_2 = list()
+  for (subj in unique(gps_df$IID)){
+    subj_data = subset(gps_df_clean2, IID==subj)
+    subj_mat_1[[subj]] = lapply(subj_seq[[subj]], function(list) rmssd_gps(subj_data[list,]))
+    subj_mat_2[[subj]] = lapply(subj_seq[[subj]], function(list) rmssd_gps(subj_data[-list,]))
+  }
+  return(list(subj_mat_1 = subj_mat_1, subj_mat_2 = subj_mat_2 ))
+}
+
+gps_clean2_rmssd_feat = make_feature_rmssd(gps_df_clean2, subj_seq)
+```
+
+```{r warp var feature list to data frame, fig.height=6, echo=F}
+var_df = list()
+for (subj in unique(gps_df$IID)) {
+  var_df[[subj]] = data.frame(matrix(NA, part_times, length(colnames(gps_df_clean))-2))
+  for (i in 1:part_times){
+    var_df[[subj]][i,] = gps_clean2_rmssd_feat$subj_mat_1[[subj]][[i]]
+  }
+  colnames(var_df[[subj]]) = colnames(gps_df_clean[3:17])
+}
+
+var_plots = list()
+for (gps_ft in colnames(gps_df_clean[3:17])){
+  var_plots[[gps_ft]] = hist_chx(sapply(var_df, function(df) df[1,gps_ft]), title = gps_ft, xaxis = "Variability(RMSSD)", yaxis = "count")
+}
+
+Reduce(`+`, var_plots)
+```
+**Figure 10: Feature variability for all subjects**. Variability is measured by `root mean square of successive differences` (RMSSD). The histograms are for data in the first random half split.
+
+
+
+### 10. Predict with New Features 
+```{r define match function for vector features}
+calc_match_vector = function(subj_mat_1,subj_mat_2,method) {
+  part_times = length(subj_mat_1[[1]])
+  database = list() 
+  for (time in 1:part_times) {
+      database[[time]] = lapply(subj_mat_2, function(subjmat) subjmat[[time]])
+  }
+  
+    # match target to database
+    match_cor = list()
+    for (subj1 in names(subj_mat_1)){ #loop through each subj
+      # create a list of target across partitions
+      target_list = lapply(subj_mat_1[[subj1]], function(part) part)
+      # create a match list
+      for (time in 1:part_times){
+        target_subj_time = target_list[[time]] #loop through each partition
+        for (subj2 in names(subj_mat_2)){ #loop everyone in 2nd half
+          data_subj_time = subj_mat_2[[subj2]][[time]]
+          if (method == "cor") {
+          match_cor[[subj1]][[as.character(time)]][[subj2]] = cor(target_subj_time,data_subj_time,use = "na.or.complete")
+          } 
+          else if (method == "rmse") {
+            match_cor[[subj1]][[as.character(time)]][[subj2]] = rmse(target_subj_time,data_subj_time)
+          }
+        }
+      }
+    }
+  return(match_cor)
+}
+```
+
+
+```{r calc match accuracy using mean features}
+match_mean_rmse = calc_match_vector(gps_clean2_mean_feat$subj_mat_1,gps_clean2_mean_feat$subj_mat_2,"rmse")
+acc_time_mean_rmse = calc_acc_time(match_mean_rmse,"min")
+acc_subj_mean_rmse = calc_acc_subj(match_mean_rmse,"min")
+
+match_mean_cor = calc_match_vector(gps_clean2_mean_feat$subj_mat_1,gps_clean2_mean_feat$subj_mat_2,"cor")
+acc_time_mean_cor = calc_acc_time(match_mean_cor,"max")
+acc_subj_mean_cor = calc_acc_subj(match_mean_cor,"max")
+```
+
+```{r calc match accuracy using variability features}
+match_rmssd_rmse = calc_match_vector(gps_clean2_rmssd_feat$subj_mat_1,gps_clean2_rmssd_feat$subj_mat_2, "rmse")
+acc_time_rmssd_rmse = calc_acc_time(match_rmssd_rmse, "min")
+acc_subj_rmssd_rmse = calc_acc_subj(match_rmssd_rmse, "min")
+
+
+match_rmssd_cor = calc_match_vector(gps_clean2_rmssd_feat$subj_mat_1,gps_clean2_rmssd_feat$subj_mat_2, "cor")
+acc_time_rmssd_cor = calc_acc_time(match_rmssd_cor, "max")
+acc_subj_rmssd_cor = calc_acc_subj(match_rmssd_cor, "max")
+```
+
+### 11. Permutation Tests with New Features 
+
+#### 11a. Average Accuracy
+```{r define new permutation functions}
+perm_vector = function(gps_df, perm_time, method_feature, method_match){
+  gps_df_perm = gps_df
+  perm_acc_time = list()
+  perm_acc_subj = list()
+  for (i in 1:perm_time) {
+    perm_part_times = 1
+    print(paste("processing ...", i,"..."))
+    gps_df_perm$IID = sample(gps_df_perm$IID)
+    perm_subj_seq = make_subj_seq(gps_df_perm,part_times = perm_part_times)
+    if (method_feature == "rmssd") {
+      perm_gps = make_feature_rmssd(gps_df_perm,perm_subj_seq)
+    } else if (method_feature == "mean"){
+      perm_gps = make_feature_mean(gps_df_perm,perm_subj_seq)
+    } else if (method_feature == "combined"){
+      perm_gps_rmssd = make_feature_rmssd(gps_df_perm,perm_subj_seq)
+      perm_gps_mean = make_feature_mean(gps_df_perm,perm_subj_seq)
+      perm_gps_cor = make_feature_matrix(gps_df_perm,perm_subj_seq,3:17)
+      subj_mat_1 = list()
+      subj_mat_2 = list()
+      for (subj in names(perm_gps_cor$subj_mat_1)){
+          #print(subj)
+          subj_mat_1[[subj]]$Resample1 = as.numeric( c(value(perm_gps_rmssd$subj_mat_1[[subj]][[1]]),value(perm_gps_mean$subj_mat_1[[subj]][[1]]),perm_gps_cor$subj_mat_1[[subj]][[1]]$cor))
+          subj_mat_2[[subj]]$Resample1 = as.numeric( c(value(perm_gps_rmssd$subj_mat_2[[subj]][[1]]),value(perm_gps_mean$subj_mat_2[[subj]][[1]]),perm_gps_cor$subj_mat_2[[subj]][[1]]$cor))
+      }
+      perm_gps = list(subj_mat_1 = subj_mat_1, subj_mat_2 = subj_mat_2)
+    }
+    perm_mat_1 = perm_gps$subj_mat_1
+    perm_mat_2 = perm_gps$subj_mat_2
+    if (method_match == "cor") {
+      perm_match = calc_match_vector(perm_mat_1,perm_mat_2, "cor")
+      perm_acc_time[[i]] = calc_acc_time(perm_match, "max")
+      perm_acc_subj[[i]] = calc_acc_subj(perm_match, "max")
+    }
+    else if (method_match == "rmse"){
+      perm_match = calc_match_vector(perm_mat_1,perm_mat_2, "rmse")
+      perm_acc_time[[i]] = calc_acc_time(perm_match,"min")
+      perm_acc_subj[[i]] = calc_acc_subj(perm_match,"min")
+    }
+  }
+  return(list(perm_acc_time= perm_acc_time,perm_acc_subj = perm_acc_subj))
+}
+```
+
+
+```{r run permutation for mean features match by cor, fig.width=6, message=FALSE, include=FALSE}
+perm_mean_cor = perm_vector(gps_df_clean2, 1000, "mean", "cor")
+
+p_time_mean_cor = hist_chx(acc_time_mean_cor, bins = 8, title = paste("Mean Features: \n Average Accuracy Across",part_times,"Data Partitions"), xaxis = "Prediction Accuracy", yaxis = "Count")
+
+q_time_mean_cor =  hist_chx(unlist(perm_mean_cor$perm_acc_time), bins = 8, title = paste("Mean Features: \n Average Accuracy Across",length(perm_mean_cor$perm_acc_time),"Permutations"), xaxis = "Prediction Accuracy", yaxis = "Count")
+```
+
+```{r fig.width= 6, message=FALSE}
+p_time_mean_cor + q_time_mean_cor
+```
+
+**Figure 11: Prediction accuracy using mean features and matched by max pearson correlation**.
+
+```{r run permutation for mean features match by rmse, fig.width=6, message=FALSE, include=FALSE}
+perm_mean_rmse = perm_vector(gps_df_clean2, 1000, "mean", "rmse")
+
+p_time_mean_rmse = hist_chx(acc_time_mean_rmse, bins = 8, title = paste("Mean Features: \n Average Accuracy Across",part_times,"Data Partitions"), xaxis = "Prediction Accuracy", yaxis = "Count")
+
+q_time_mean_rmse =  hist_chx(unlist(perm_mean_rmse$perm_acc_time), bins = 8, title = paste("Mean Features: \n Average Accuracy Across",length(perm_mean_rmse$perm_acc_time),"Permutations"), xaxis = "Prediction Accuracy", yaxis = "Count")
+
+```
+
+```{r fig.width= 6, message=FALSE}
+p_time_mean_rmse + q_time_mean_rmse
+```
+
+**Figure 11: Prediction accuracy using mean features and matched by min root mean squared**.
+
+
+```{r run permutation for rmssd features matched by cor, fig.width=6, message=FALSE, include=FALSE}
+perm_rmssd_cor = perm_vector(gps_df_clean2, 1000, "rmssd","cor")
+
+p_time_rmssd_cor = hist_chx(acc_time_rmssd_cor, bins = 8, title = paste("RMSSD Features: \n Average Accuracy Across",part_times,"Data Partitions"), xaxis = "Prediction Accuracy", yaxis = "Count")
+
+q_time_rmssd_cor = hist_chx(unlist(perm_rmssd_cor$perm_acc_time), bins = 8, title = paste("RMSSD Features: Average Accuracy Across",length(perm_rmssd_cor$perm_acc_time_cor),"Permutations"), xaxis = "Prediction Accuracy", yaxis = "Count")
+```
+
+```{r fig.width=6, message=FALSE}
+p_time_rmssd_cor + q_time_rmssd_cor
+```
+
+**Figure 12: Prediction accuracy using RMSSD features and matched by max pearson correlation**.
+
+```{r run permutation for rmssd features matched by rmse, message=FALSE, include=FALSE}
+perm_rmssd_rmse = perm_vector(gps_df_clean2, 1000, "rmssd","rmse")
+
+p_time_rmssd_rmse = hist_chx(acc_time_rmssd_rmse, bins = 8, title = paste("RMSSD Features: \n Average Accuracy Across",length(acc_time_rmssd_cor),"Data Partitions"), xaxis = "Prediction Accuracy", yaxis = "Count")
+
+q_time_rmssd_rmse = hist_chx(unlist(perm_rmssd_rmse$perm_acc_time), bins = 8, title = paste("RMSSD Features: Average Accuracy Across",length(perm_rmssd_rmse$perm_acc_time_cor),"Permutations"), xaxis = "Prediction Accuracy", yaxis = "Count")
+```
+
+```{r fig.width=6, message=FALSE}
+p_time_rmssd_rmse + q_time_rmssd_rmse
+```
+
+**Figure 13: Prediction accuracy using RMSSD features and matched by min root mean squared**.
+
+```{r define combine perm subj functions}
+
+combine_perm_subj = function(acc_subj_plot, perm_acc_subj) {
+  perm_subj = list()
+  for (subj in acc_subj_plot$data$x) {
+    perm_subj$val[[subj]] = sapply(perm_acc_subj, function(perm) perm[which(names(perm) == subj)])
+    perm_subj$hist[[subj]] = hist_chx(perm_subj[[subj]]$val, bins = 8, title = paste(subj,": Accuracy Across \n",perm_time,"Permutations"), xaxis = "Prediction Accuracy", yaxis = "Count")
+    perm_subj$acc[[subj]] = sum(perm_subj$val[[subj]])/perm_time
+  }
+  return(perm_subj)
+}
+
+
+subj_scatter_perm = function(gps_df,acc_subj,perm_subj, method){
+    subj_df <- data.frame(x=unique(gps_df$IID))
+  subj_df$y = acc_subj
+  subj_df$y_perm = unlist(perm_subj$acc)
+  subj_df = subj_df[order(subj_df$y),]
+  p = ggplot(subj_df, aes(x = reorder(x, y), y = value)) + 
+    geom_point(aes(y = y, col = "subject data")) + 
+    geom_point(aes(y = y_perm, col = "permutation")) +
+    theme_cowplot() + 
+    labs(title = paste(method,"Features \n Subject Level Accuracy Across",part_times,"Data Partitions"), 
+         x = "Subjects", y = "Prediction Accuracy") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8), plot.title = element_text(hjust = 0.5))
+  return(p)
+}
+
+```
+
+
+```{r mean features by subject with permutation, fig.width=8, fig.height=6}
+p_subj_mean = subj_scatter(gps_df_clean2, acc_subj_mean_cor, "Mean")
+perm_subj_mean = combine_perm_subj(p_subj_mean,perm_mean_cor$perm_acc_subj)
+p_subj_mean_perm = subj_scatter_perm(gps_df_clean2, acc_subj_mean_cor, perm_subj_mean, "Mean")
+ggplotly(p_subj_mean_perm)
+```
+**Figure 14: Subject level prediction accuracy using mean features and matched by max pearson correlation**.
+
+```{r rmssd features by subject with permutation, fig.width=8, fig.height=6}
+p_subj_rmssd = subj_scatter(gps_df_clean2, acc_subj_rmssd_cor, "RMSSD")
+perm_subj_rmssd = combine_perm_subj(p_subj_rmssd,perm_rmssd_cor$perm_acc_subj)
+p_subj_rmssd_perm = subj_scatter_perm(gps_df_clean2, acc_subj_rmssd_cor, perm_subj_rmssd, "RMSSD")
+ggplotly(p_subj_rmssd_perm)
+```
+**Figure 15: Subject level prediction accuracy using RMSSD features and matched by max pearson correlation**.
+
+
+### 12. Compare Features
+```{r compare across data partition, fig.height=3, fig.width=10}
+p_time_cor + p_time_mean + p_time_rmssd
+q_time_cor + q_time_mean + q_time_rmssd
+```
+**Figure 16: Prediction accuracy across three feature sets**.
+
+```{r compare across subjects, fig.height=6, fig.width=4}
+p_subj_cor_perm / p_subj_mean_perm / p_subj_rmssd_perm
+```
+**Figure 17: Subject level prediction accuracy across three feature sets**.
+
+
+### 13. Confounding variables
+```{r subj accuracy cor with potential confounders, fig.height=6, fig.width=7, warning=FALSE, wmessage=FALSE}
+subj_minmissing = gps_df_clean2 %>% group_by(IID) %>% summarise_if(is.numeric, mean, na.rm = TRUE)
+sp_plots = list()
+for (gps_ft in colnames(subj_minmissing)[-1]){
+  sp_plots[[gps_ft]] = conf_scatter_plot(subj_minmissing,acc_subj,gps_ft)
+}
+
+sp_plots_pvals = sapply(sp_plots,function(plot) cor.test(plot$data[,1],sp_plots$Hometime$data[,2])$p.value)
+sp_plots_pvals_fdr = p.adjust(sp_plots_pvals,method = "fdr")
+Reduce(`+`, sp_plots)
+```
+**Figure 18: Relationships between subject level prediction accuracy and individual features**. Notably, there was no relationship between individual data missingness and subject level prediction accuracy.
+
+
+```{r accuracy explained by data amount}
+subj_days = gps_df_clean2 %>% group_by(IID) %>% dplyr::tally(name = "Days Collected")
+
+conf_scatter_plot(subj_days, acc_subj, "Days Collected")
+
+#permutation
+days_acc_df = data.frame(acc = acc_subj, days = subj_days$`Days Collected`)
+days_acc_perm_r = c()
+for (i in 1:1000000){
+  acc_subj_perm = value(acc_subj[sample(length(acc_subj))])
+  days_acc_perm_r[i] = cor(subj_days$`Days Collected`,acc_subj_perm)
+}
+
+```
+**Figure 19: Relationships between subject level prediction accuracy and data quantity**. 
+
+
+### 14. Combine Features
+```{r combine features}
+gps_clean2_combined_feat = list()
+for (subj in names(subj_mat_1)){
+  for (time in 1:part_times){
+    cor_feat1 = gps_clean2_feature$subj_mat_1[[subj]][[time]]$cor
+    mean_feat1 = gps_clean2_mean_feat$subj_mat_1[[subj]][[time]]
+    rmssd_feat1 = gps_clean2_rmssd_feat$subj_mat_1[[subj]][[time]]
+    
+    cor_feat2 = gps_clean2_feature$subj_mat_2[[subj]][[time]]$cor
+    mean_feat2 = gps_clean2_mean_feat$subj_mat_2[[subj]][[time]]
+    rmssd_feat2 = gps_clean2_rmssd_feat$subj_mat_2[[subj]][[time]]
+    
+    gps_clean2_combined_feat$subj_mat_1[[subj]][[time]] = c(cor_feat1, mean_feat1, rmssd_feat1)
+    gps_clean2_combined_feat$subj_mat_2[[subj]][[time]] = c(cor_feat2, mean_feat2, rmssd_feat2)
+  }
+}
+
+```
+
+```{r match with combined features, fig.align="center", fig.height=3, fig.width=3}
+match_combined_feat = calc_match_vector(gps_clean2_combined_feat$subj_mat_1, gps_clean2_combined_feat$subj_mat_2, "cor")
+acc_time_cb  = calc_acc_time(match_combined_feat, "max")
+acc_subj_cb  = calc_acc_subj(match_combined_feat, "max")
+p = hist_chx(acc_time_cb, bins = 8, title = paste("Combined Features \n by data partition"), xaxis = "Prediction Accuracy", yaxis = "Count")
+q = hist_chx(acc_subj_cb, bins = 8, title = paste("Combined Features \n by subject"), xaxis = "Prediction Accuracy", yaxis = "Count")
+p
+```
+**Figure 20: Prediction accuracy when all three sets of features were combined**. 
+
+```{r run permutation for combined features, fig.width=6, message=FALSE, include=FALSE}
+perm_cb_cor = perm_vector(gps_df_clean2, 1000, "combined", "cor")
+p_subj_cb = subj_scatter(gps_df_clean2, acc_subj_cb, "Combined")
+
+perm_subj_cb = combine_perm_subj(p_subj_cb,perm_cb_cor$perm_acc_subj)
+
+p_time_mean_rmse = hist_chx(acc_time_cb, bins = 8, title = paste("Mean Features: \n Average Accuracy Across",part_times,"Data Partitions"), xaxis = "Prediction Accuracy", yaxis = "Count")
+
+q_time_cb_cor =  hist_chx(unlist(perm_cb_cor$perm_acc_time), bins = 8, title = paste("All Features: \n Average Accuracy Across",length(perm_mean_rmse$perm_acc_time),"Permutations"), xaxis = "Prediction Accuracy", yaxis = "Count")
+
+```
+
+
+### 15. Associations with Psychopathology
+```{r psychopathology, fig.align="center", message=FALSE, warning=FALSE}
+ids = read.xlsx(file.path(project_path,"data/clinical_data/subjecttracker_4.xlsx"))[1:41,]
+#psych_score = read.csv(file.path(project_path,"data/self_report_scored_20200128.csv"))
+# psych_pro = psych %>% filter(ari_proband_complete == 2)
+psych_item = read.csv(file.path(project_path,"data/clinical_data/self_report_itemwise.csv"))
+
+psych_beiwe = inner_join(ids,psych_item, by = c("BBLID" = "bblid"))
+acc_subj_df = data.frame(beiweID = names(acc_subj), acc = acc_subj)
+psych_beiwe_acc_subj = inner_join(acc_subj_df,psych_beiwe, by = "beiweID")
+
+
+psych_sum = psych_beiwe_acc_subj %>%
+            mutate(sum_als = rowSums(.[263:280], na.rm = T)) %>%
+            mutate(sum_ari = rowSums(.[grep("^ari_[0-9]$",colnames(psych_beiwe_acc_subj))], na.rm = T))
+
+psych_sum = inner_join(psych_sum, subj_days, by = c("beiweID" = "IID"))
+psych_sum$days = psych_sum$`Days Collected`
+psych_sum = inner_join(subj_minmissing, psych_sum, by = c( "IID" = "beiweID" ))
+psych_als = data.frame(als = psych_sum[,263:280], BBLID = psych_sum$BBLID)
+psych_ari = data.frame(ari = psych_sum[,23:29], BBLID = psych_sum$BBLID)
+psych_sum$gpsacc_subj = acc_subj_cb_accgps
+ # show results
+
+als.pca <- prcomp(na.omit(psych_sum[,263:280]), scale = TRUE)
+ari.pca <- prcomp(na.omit(psych_sum[,23:29], scale = TRUE))
+
+psych_sum$pca_als = c(als.pca$x[1:22,"PC1"], NA, als.pca$x[23:40,"PC1"])
+psych_sum$pca_ari = ari.pca$x[,"PC1"]
+psych_sum$als_AD = psych_sum$als_2 + psych_sum$als_10 + psych_sum$als_5 + psych_sum$als_12 + psych_sum$als_13 + psych_sum$als_15 + psych_sum$als_16 + psych_sum$als_17 + psych_sum$als_18
+fviz_eig(als.pca) / fviz_eig(ari.pca)
+
+```
+
+```{r }
+als_ari_sum = lm(acc ~ sum_als + sum_ari + days , data = psych_sum)
+acc_als_ari_sum = lm(gpsacc_subj ~ sum_als + sum_ari + days , data = psych_sum)
+
+#als_fit = lm( acc ~ scale(pca_als) + scale(days) + scale(admin_age) + scale(admin_sex) , data = psych_sum)
+#summary(lm( acc ~ scale(als_AD) + scale(days) + scale(admin_age) + scale(admin_sex) , data = psych_sum))$coefficients[2,4]
+
+#ari_fit = lm( acc ~ scale(pca_ari) + scale(days) + scale(admin_age) + scale(admin_sex) , data = psych_sum)
+#ari_als_fit = lm( acc ~ scale(pca_als) + scale(pca_ari) + scale(days) + scale(admin_age) + scale(admin_sex) , data = psych_sum)
+
+days_plot = visreg(als_ari_sum, "days", gg = T, line=list(col="black")) + 
+            ylab("GPS Footprint \n Prediction Accuracy") + xlab("Days Collected") +
+            theme_cowplot() + stat_cor(method = "pearson")
+sum_als_plot = visreg(als_ari_sum, "sum_als", gg = T,  line=list(col="black")) + 
+            ylab("GPS Footprint \n Prediction Accuracy") + xlab("Affective Lability Score (ALS)") +
+            theme_cowplot() + stat_cor(method = "pearson")
+sum_ari_plot = visreg(als_ari_sum, "sum_ari", gg = T, line=list(col="black")) + 
+            ylab("GPS Footprint \n Prediction Accuracy") + xlab("Affective Reactivity Index (ARI)") +
+            theme_cowplot() + stat_cor(method = "pearson")
+days_plot / sum_als_plot / sum_ari_plot
+```
+
+```{r psychopathology permutation}
+#permutation
+als_ari_perm_r = c()
+for (i in 1:1000){
+  psych_sum_perm = psych_sum
+  psych_sum_perm$als_perm = psych_sum$sum_als[sample(length(psych_sum$sum_als))]
+  als_ari_perm_r[i] = summary(lm(acc ~ als_perm + sum_ari + days , data = psych_sum_perm))[[8]]
+}
+
+```
+
+```{r }
+mod <- lm(acc~sum_als*sum_ari + days , data=psych_sum)  # just raw scores, no residuals
+als_int_plot <- visreg(mod,xvar="sum_als",by="sum_ari",overlay=TRUE,strip.names=TRUE)
+visreg(mod,xvar="sum_ari",by="sum_als",overlay=TRUE)
+```
+**Figure 21: Associations between irritability and prediction accuracy**. 
+
+### 16. Associations with Cognition
+```{r Cognition, fig.align="center", fig.height=3, fig.width=6, message=FALSE, warning=FALSE}
+cnb_score = read.csv(file.path(project_path,"data/grmpy_bifactor_cnb_cleaned.csv"))
+cor_traits = read.csv(file.path(project_path,"data/grmpy_corrtraits_cnb_cleaned.csv"))
+cnb_beiwe = inner_join(ids,cnb_score, by = c("BBLID" = "bblid"))
+
+```
+
+### 17.Similarity Matrix Correlation
+```{r}
+gps_wide_matrix_all = data.frame()
+
+subj_seq_mat = arrange(subj_days,`Days Collected`)$IID
+
+for (subj in subj_seq_mat){
+  #if ((subj %in% subj_days$IID[which(subj_days$`Days Collected`<=10)]) == T) {
+    for (part in 1:1){
+      half_1 = gps_clean2_feature$subj_mat_1[[subj]][[part]]$cor
+      half_2 = gps_clean2_feature$subj_mat_2[[subj]][[part]]$cor
+      half_1_half_2 = c(half_1,half_2)
+      gps_wide_matrix_all = rbind(gps_wide_matrix_all,half_1_half_2)
+      }
+    #}
+}
+
+gps_wide_matrix_all = t(gps_wide_matrix_all)
+gps_corplot_all = rquery.cormat(gps_wide_matrix_all, type = "full",graph=FALSE)
+gps_corplot_all$subj = arrange(subj_days,`Days Collected`)$IID
+
+levelplot(gps_corplot_all$r,scales=list(draw=FALSE),col.regions = rev(rainbow(1000))[-c(1:20)], region =T, ylab.right = "Pearson correlation", main=list(label='GPS Feature Similarity'),xlab="Subjects",ylab="Subjects")
+```
+
+```{r}
+n_subj = length(subj_seq_mat)
+gps_days_sim_matrix = matrix(NA, n_subj,n_subj)
+for (i in 1:n_subj){
+  for (j in 1:n_subj){
+    subj_i_days = subj_days$`Days Collected`[which(subj_days$IID == subj_seq_mat[i])]
+    subj_j_days = subj_days$`Days Collected`[which(subj_days$IID == subj_seq_mat[j])]
+    gps_days_sim_matrix[i,j] = abs(subj_i_days-subj_j_days)/max(subj_days$`Days Collected`)
+  }
+}
+levelplot(gps_days_sim_matrix,scales=list(draw=FALSE),col.regions = rev(rainbow(1000))[-c(1:20)], region =T, ylab.right = "Differences in Days Collected", main=list(label='Days Collected Similarity'),xlab="Subjects",ylab="Subjects")
+
+```
+
+```{r}
+n_subj = length(subj_seq_mat)
+gps_mins_sim_matrix = matrix(NA, n_subj,n_subj)
+for (i in 1:n_subj){
+  for (j in 1:n_subj){
+    subj_i_mins = subj_minmissing$MinsMissing[which(subj_minmissing$IID == subj_seq_mat[i])]
+    subj_j_mins = subj_minmissing$MinsMissing[which(subj_minmissing$IID == subj_seq_mat[j])]
+    gps_mins_sim_matrix[i,j] = abs(subj_i_mins-subj_j_mins)/max(subj_minmissing$MinsMissing)
+  }
+}
+levelplot(gps_mins_sim_matrix,scales=list(draw=FALSE),col.regions = rev(rainbow(1000))[-c(1:20)], region =T, ylab.right = "Differences in Days Collected", main=list(label='Mins Missing Similarity'),xlab="Subjects",ylab="Subjects")
+
+```
+
+```{r fig.height=6, fig.width=6}
+gps_sim_df = data.frame(gps = gps_corplot_all$r[lower.tri(gps_corplot_all$r)], days = gps_days_sim_matrix[lower.tri(gps_days_sim_matrix)], mins = gps_mins_sim_matrix[lower.tri(gps_mins_sim_matrix)])
+
+days_sim_plot = ggscatter(gps_sim_df, y = "gps", x = "days",
+   add = "reg.line",  # Add regressin line
+   add.params = list(color = "black", fill = "lightgray"), # Customize reg. line
+   conf.int = TRUE # Add confidence interval
+   ) + stat_cor(method = "pearson") +
+    theme_cowplot() + theme(plot.title = element_text(hjust = 0.5)) +
+    labs(y = "GPS Similarity", x = "Days Collected Similarity", title = "Similarity Correlation")
+
+mins_sim_plot = ggscatter(gps_sim_df, y = "gps", x = "mins",
+   add = "reg.line",  # Add regressin line
+   add.params = list(color = "black", fill = "lightgray"), # Customize reg. line
+   conf.int = TRUE # Add confidence interval
+   ) + stat_cor(method = "pearson") +
+    theme_cowplot() + theme(plot.title = element_text(hjust = 0.5)) +
+    labs(y = "GPS Similarity", x = "Mins Missing Similarity", title = "Similarity Correlation")
+
+days_sim_plot / mins_sim_plot
+```
+
+### 18.GPS Score
+```{r}
+gps_mean = gps_df_clean2 %>% group_by(IID) %>% summarise_if(is.numeric, mean, na.rm = TRUE)
+res.pca <- prcomp(gps_mean[,2:16], scale = TRUE)
+fviz_eig(res.pca)
+gps_score = res.pca$x[,'PC1']
+gps_score_df = data.frame(beiweID = gps_mean$IID, gps_score = gps_score)
+fc_com_mean_1 = as.data.frame(sapply(fc_com_1, function(com) sapply(com, function(subj) mean(subj$V1))))
+fc_com_mean_1$BBLID = as.numeric(rownames(fc_com_mean_1))
+fc_com_mean_1 = inner_join(ids[,c(1,3)],fc_com_mean_1, by = "BBLID" )
+fc_com_mean_1_gps = inner_join(fc_com_mean_1,gps_score_df, by = "beiweID")
+
+
+fviz_pca_ind(res.pca,
+             col.ind = "cos2", # Color by the quality of representation
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE     # Avoid text overlapping
+             )
+
+fviz_pca_var(res.pca,
+             col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE     # Avoid text overlapping
+             )
+
+fviz_pca_biplot(res.pca, repel = TRUE,
+                col.var = "#2E9FDF", # Variables color
+                col.ind = "#696969"  # Individuals color
+                )
+```
+
+### 19.Feature Leison
+
+```{r feature leison experiment, message=FALSE, warning=FALSE}
+feat_names = names(gps_df_clean2[,3:17])
+subj_seq_100 = make_subj_seq(gps_df_clean2, 100)
+gps_ft_leison = list()
+gps_df_perm = gps_df_clean2
+perm_time_cut = 100
+perm_acc_time_cut = list()
+perm_acc_subj_cut = list()
+for (i in 1:15){
+  ft_rmv = feat_names[i]
+  print(ft_rmv)
+  range = c(3:17)[-i]
+  print(range)
+  # original data
+  feature_nd = make_feature_matrix(gps_df_clean2,subj_seq_100,range)
+  match_cor_nd = calc_match_cor(feature_nd$subj_mat_1,feature_nd$subj_mat_2)
+  gps_ft_leison[[ft_rmv]]$acc_time = calc_acc_time(match_cor_nd, "max")
+  gps_ft_leison[[ft_rmv]]$acc_subj = calc_acc_subj(match_cor_nd, "max")
+  print(mean(gps_ft_leison[[ft_rmv]]$acc_time))
+}
+  #permutation data
+for (i in 1:15){
+  ft_rmv = feat_names[i]
+  print(ft_rmv)
+  range = c(3:17)[-i]
+  print(range)
+  for (j in 1:perm_time_cut) {
+    perm_part_times = 1
+    print(paste("permuting ...", i,"..."))
+    gps_df_perm$IID = sample(gps_df_perm$IID)
+    perm_subj_seq = make_subj_seq(gps_df_perm, part_times = perm_part_times)
+    perm_gps = make_feature_matrix(gps_df_perm,perm_subj_seq,range)
+    perm_mat_1 = perm_gps$subj_mat_1
+    perm_mat_2 = perm_gps$subj_mat_2
+    perm_match_cor = calc_match_cor(perm_mat_1,perm_mat_2)
+    perm_acc_time_cut[[ft_rmv]][[j]] = calc_acc_time(perm_match_cor)
+    perm_acc_subj_cut[[ft_rmv]][[j]] = calc_acc_subj(perm_match_cor)
+  }
+  print(mean(unlist(perm_acc_time_cut[[ft_rmv]])))
+}
+```
+
+```{r gps_lesion_df}
+acc_time_lesion_df = as.data.frame(sapply(gps_ft_leison, function(lesion) lesion$acc_time))
+acc_time_lesion_df$`None_Removed` = acc_time[1:10]
+acc_time_lesion_df <- as.data.frame(gather(acc_time_lesion_df, feature, acc_time, colnames(acc_time_lesion_df), factor_key=TRUE))
+
+stat.test <- acc_time_lesion_df %>% rstatix::t_test(acc_time ~ feature, ref.group = "None_Removed", p.adjust.method = "bonferroni")
+
+p<-ggplot(acc_time_lesion_df, aes(x=reorder(feature, acc_time, FUN = median), y=acc_time)) + 
+   geom_jitter(aes(colour = feature), show.legend = F, width = 0.10) + 
+  geom_boxplot(show.legend = F, alpha = 0.2, outlier.alpha = 0) +
+  scale_y_continuous(limits=c(0,1)) +
+  theme_cowplot() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+    ylab("GPS Footprint Prediciton Accuracy") + xlab("Feature Removed") #+ 
+  # ggpubr::stat_pvalue_manual(
+  #   stat.test, label = "p.adj", 
+  #   y.position = 0.8,
+  #   remove.bracket = F,
+  #   step.increase = 0.1,
+  #   hide.ns = T
+  #   )
+p
+
+```
+
+```{r gps_lesion_perm}
+acc_time_lesion_perm_df = as.data.frame(sapply(perm_acc_time_cut, function(lesion) unlist(lesion)))
+acc_time_lesion_perm_df$`None_Removed` = perm_acc_time_all[1:10]
+acc_time_lesion_perm_df <- as.data.frame(gather(acc_time_lesion_perm_df, feature, acc_time, colnames(acc_time_lesion_perm_df), factor_key=TRUE))
+
+stat.test.perm <- acc_time_lesion_perm_df %>% rstatix::t_test(acc_time ~ feature, ref.group = "None_Removed", p.adjust.method = "bonferroni")
+
+p_perm<-ggplot(acc_time_lesion_perm_df, aes(x=reorder(feature, acc_time, FUN = median), y=acc_time)) + 
+   geom_jitter(aes(colour = feature), show.legend = F, width = 0.10) + 
+  geom_boxplot(show.legend = F, alpha = 0.2, outlier.alpha = 0) +
+  scale_y_continuous(limits=c(0,1)) +
+  theme_cowplot() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+    ylab("GPS Footprint Prediciton Accuracy") + xlab("Feature Removed") #+ 
+  # ggpubr::stat_pvalue_manual(
+  #   stat.test, label = "p.adj", 
+  #   y.position = 0.8,
+  #   remove.bracket = F,
+  #   step.increase = 0.1,
+  #   hide.ns = T
+  #   )
+p_perm
+```
+
+### 20. accelerometer data
+
+```{r organizing accelerometer data}
+subj_list = unique(gps_df$IID)
+subj_acc_data_dim = dim(rbindlist(lapply(subj_list, function(subj) {print(subj); subj_data =  readRDS(file.path(data_path,"Results/Group/accelerometer",subj,"accelerometer_ft.rds")); subj_data[,c(2:8,11)]})))
+
+subj_acc_data_clean = as.data.frame(rbindlist(lapply(subj_list, function(subj) {print(subj); subj_data =  readRDS(file.path(data_path,"Results/Group/accelerometer",subj,"accelerometer_ft.rds")); subj_data[2:(dim(subj_data)[1]-1),c(2:8,11)]}))) #also removes 1st and last day
+```
+
+```{r example of the cov of accelerometer}
+example_acc_data = subj_acc_data_clean[subj_seq$`16xv6ko1`$Resample0001,1:7]
+acc_cor = rquery.cormat(example_acc_data, type = "full")
+```
+```{r calc acc features}
+subj_acc_data_clean$IID = subj_acc_data_clean$subject
+set.seed(510)
+acc_subj_seq = make_subj_seq(subj_acc_data_clean, part_times)
+acc_clean_feature = make_feature_matrix(subj_acc_data_clean, acc_subj_seq,  c(1:7) )
+acc_wide_matrix = data.frame()
+subj_acc_days = subj_acc_data_clean %>% group_by(IID) %>% dplyr::tally(name = "acc_days")
+for (subj in arrange(subj_acc_days,`acc_days`)$IID){
+    for (part in 1:5){
+      half_1 = acc_clean_feature$subj_mat_1[[subj]][[part]]$cor
+      half_2 = acc_clean_feature$subj_mat_2[[subj]][[part]]$cor
+      half_1_half_2 = c(half_1,half_2)
+      acc_wide_matrix = rbind(acc_wide_matrix,half_1)
+      acc_wide_matrix = rbind(acc_wide_matrix,half_2)
+      }
+}
+
+acc_wide_matrix = t(acc_wide_matrix)
+acc_corplot = rquery.cormat(acc_wide_matrix, type = "full",graph=FALSE)
+acc_corplot$subj = arrange(subj_acc_days,`acc_days`)$IID
+
+levelplot(acc_corplot$r,scales=list(draw=FALSE),col.regions = rev(rainbow(1000))[-c(1:20)], region =T, ylab.right = "Pearson correlation", main=list(label='Acc Feature Similarity'),xlab="",ylab="")
+```
+
+```{r match on acc features}
+acc_match_cor = calc_match_cor(acc_clean_feature$subj_mat_1,acc_clean_feature$subj_mat_2)
+acc_acc_time = calc_acc_time(acc_match_cor, "max")
+acc_acc_subj = calc_acc_subj(acc_match_cor)
+```
+
+```{r acc perm}
+acc_df_perm = subj_acc_data_clean
+perm_time = 1000
+perm_acc_acc_time = list()
+perm_acc_acc_subj = list()
+for (i in 1:perm_time) {
+  perm_part_times = 1
+  print(paste("processing ...", i,"..."))
+  acc_df_perm$IID = sample(acc_df_perm$IID)
+  perm_subj_seq = make_subj_seq(acc_df_perm, part_times = perm_part_times)
+  perm_acc = make_feature_matrix(acc_df_perm,perm_subj_seq,1:7)
+  perm_mat_1 = perm_acc$subj_mat_1
+  perm_mat_2 = perm_acc$subj_mat_2
+  perm_match_cor = calc_match_cor(perm_mat_1,perm_mat_2)
+  perm_acc_acc_time[[i]] = calc_acc_time(perm_match_cor)
+  perm_acc_acc_subj[[i]] = calc_acc_subj(perm_match_cor)
+}
+```
+
+```{r combine gps + acc}
+gps_acc_combined_feat = list()
+for (subj in subj_list){
+  for (time in 1:part_times){
+    gps_feat1 = gps_clean2_feature$subj_mat_1[[subj]][[time]]$cor
+    acc_feat1 = acc_clean_feature$subj_mat_1[[subj]][[time]]$cor
+    
+    gps_feat2 = gps_clean2_feature$subj_mat_2[[subj]][[time]]$cor
+    acc_feat2 = acc_clean_feature$subj_mat_2[[subj]][[time]]$cor
+
+    gps_acc_combined_feat$subj_mat_1[[subj]][[time]] = c(gps_feat1, acc_feat1)
+    gps_acc_combined_feat$subj_mat_2[[subj]][[time]] = c(gps_feat2, acc_feat2)
+  }
+}
+```
+
+
+
+```{r match with combined features, fig.align="center", fig.height=3, fig.width=3}
+match_combined_gps_accfeat = calc_match_vector(gps_acc_combined_feat$subj_mat_1, gps_acc_combined_feat$subj_mat_2, "cor")
+acc_time_cb_accgps  = calc_acc_time(match_combined_gps_accfeat, "max")
+acc_subj_cb_accgps  = calc_acc_subj(match_combined_gps_accfeat, "max")
+p = hist_chx(acc_time_cb_accgps, bins = 14, title = paste("Combined Features \n by data partition"), xaxis = "Prediction Accuracy", yaxis = "Count")
+p
+```
+
+
+```{r acc+gps perm}
+gps_df_perm = gps_df_clean2
+acc_df_perm = subj_acc_data_clean
+
+perm_acc_gps_time = list()
+perm_acc_gps_subj = list()
+
+for (i in 1:perm_time) {
+  perm_part_times = 1
+  print(paste("processing ...", i,"..."))
+  gps_df_perm$IID = sample(gps_df_perm$IID)
+  acc_df_perm$IID = sample(acc_df_perm$IID)
+  
+  perm_subj_seq = make_subj_seq(gps_df_perm,part_times = perm_part_times)
+  perm_acc_subj_seq = make_subj_seq(acc_df_perm,part_times = perm_part_times)
+  
+  perm_gps_cor = make_feature_matrix(gps_df_perm,perm_subj_seq,3:17)
+  perm_acc_cor = make_feature_matrix(acc_df_perm,perm_acc_subj_seq,1:7)
+  
+  subj_mat_1 = list()
+  subj_mat_2 = list()
+  
+    for (subj in subj_list){
+        subj_mat_1[[subj]]$Resample1 = as.numeric(c(perm_gps_cor$subj_mat_1[[subj]][[1]]$cor, perm_acc_cor$subj_mat_1[[subj]][[1]]$cor))
+        subj_mat_2[[subj]]$Resample1 = as.numeric(c(perm_gps_cor$subj_mat_2[[subj]][[1]]$cor, perm_acc_cor$subj_mat_2[[subj]][[1]]$cor))
+    }
+  perm_gps_acc_mats = list(subj_mat_1 = subj_mat_1, subj_mat_2 = subj_mat_2)
+  
+  perm_match = calc_match_vector(perm_gps_acc_mats$subj_mat_1,perm_gps_acc_mats$subj_mat_2, "cor")
+  perm_acc_gps_time[[i]] = calc_acc_time(perm_match, "max")
+  perm_acc_gps_subj[[i]] = calc_acc_subj(perm_match, "max")
+}
+
+
+
+perm_acc_gps_time = unlist(perm_acc_gps_time)
+perm_acc_gps_subj = unlist(perm_acc_gps_subj)
+
+```
+
+
+### 21. screen state
+```{r organizing screen data}
+subj_list = unique(gps_df$IID)
+power_ft = readRDS(file.path(data_path,"Results/Group/power_ft.rds"))
+power_ft$IID = power_ft$subject
+
+subj_acc_data_clean = rbindlist(lapply(subj_list, function(subj) {print(subj); subj_power_data = subset(power_ft, IID == subj); print(dim(subj_power_data));  subj_power_data = subj_power_data[2:(dim(subj_power_data)[1]-1),4:9]; print(dim(subj_power_data)); return(subj_power_data)}))
+
+
+subj_power_data_clean = as.data.frame(rbindlist(lapply(subj_list, function(subj) {print(subj); subj_data =  readRDS(file.path(data_path,"Results/Group/accelerometer",subj,"accelerometer_ft.rds")); subj_data[2:(dim(subj_data)[1]-1),c(2:8,11)]}))) #also removes 1st and last day
+```
+
+### 22. Factor Analysis of EMA
+```{r factor analysis ema}
+survey_ft = readRDS(file.path(data_path,"Results/Group/survey_ft.rds"))
+q_list = substr(names(survey_ft$`26k56oo9`),1,30)
+survey_ans = sapply(subj_list, function(subj) (lapply(q_list, function(q) get_question_ans(q)[[subj]]$ans_num)))
+survey_ans_list = lapply(1:dim(survey_ans)[1],function(x) value(unlist(survey_ans[x,])))
+max_nrow = max(sapply(survey_ans_list,length))
+survey_ans_df = sapply(survey_ans_list, function(s_list) c(s_list,rep(NA,max_nrow -length(s_list))))
+colnames(survey_ans_df) = q_list
+
+library(psych)
+library(qgrah)
+xcor <- cor_auto(survey_ans_df, detectOrdinal = T, ordinalLevelMax = 7) #
+VSS.scree(xcor)
+nfactors(xcor,n.obs=dim(survey_ans_df)[1]) 
+fa.parallel(xcor,n.obs=dim(survey_ans_df)[1])
+fa.sort(fa(xcor,3,rotate="oblimin"))
+
+xcor <- cor_auto(survey_ans_df, detectOrdinal = T, ordinalLevelMax = 7) #
+omega(xcor,5, rotate = "promax", flip=T, fm="pc")
+
+sleep_ans_df = survey_ans_df[1:788,sleep_qs]
+sleep_xcor <- cor_auto(sleep_ans_df, detectOrdinal = T, ordinalLevelMax = 7) #
+VSS.scree(sleep_xcor)
+fa.sort(fa(sleep_xcor,2,rotate="promax",n.obs = 788))
+
+omega(sleep_xcor,2, rotate = "promax", flip=T, fm="pc")
+
+
+moodnow_ans_df = survey_ans_df[1:2139,mood_now_qs]
+moodnow_xcor <- cor_auto(moodnow_ans_df, detectOrdinal = T, ordinalLevelMax = 7) #
+VSS.scree(moodnow_xcor)
+fa.sort(fa(sleep_xcor,2,rotate="promax",n.obs = 788))
+
+omega(moodnow_xcor,2, rotate = "promax", flip=T, fm="pc", title = "moodnow_pc")
+
+
+moodsince_ans_df = survey_ans_df[1:2139,c(mood_since_qs)]
+moodsince_xcor <- cor_auto(moodsince_ans_df, detectOrdinal = T, ordinalLevelMax = 7) #
+VSS.scree(moodsince_xcor)
+fa.sort(fa(sleep_xcor,2,rotate="promax",n.obs = 788))
+
+omega(moodsince_xcor,2, rotate = "promax", flip=T, fm="pc", title = "moodsince_pc")
+
+
+moodall_ans_df = survey_ans_df[1:2139,c(mood_now_qs,mood_since_qs)]
+moodall_xcor <- cor_auto(moodall_ans_df, detectOrdinal = T, ordinalLevelMax = 7) #
+VSS.scree(moodall_xcor)
+fa.sort(fa(sleep_xcor,2,rotate="promax",n.obs = 788))
+
+omega(moodall_xcor,3, rotate = "promax", flip=T, fm="pc", title = "moodall_pc")
+
+
+
+fa.sort(fa(sleep_xcor,2,rotate="promax",n.obs = 788))
+fa.sort(fa(moodnow_xcor,2,rotate="promax",n.obs = 2139))
+fa.sort(fa(moodsince_xcor,2,rotate="promax",n.obs = 2139))
+
+
+```
+
+
+
+### 23. Associate with EMA
+```{r }
+
+get_question_ans = function(question_of_interest) {
+  question_idx = lapply(names(survey_ft), function(subj) which(grepl(question_of_interest, names(survey_ft[[subj]]), fixed = TRUE) == TRUE))
+  names(question_idx) = names(survey_ft)
+  
+  question_answer = lapply(names(survey_ft), function(subj) {rbindlist(survey_ft[[subj]][question_idx[[subj]]])})
+  names(question_answer) = names(survey_ft)
+  
+  return(question_answer)
+}
+
+
+
+get_question_variance = function(question_of_interest) {
+  question_idx = lapply(names(survey_ft), function(subj) which(grepl(question_of_interest, names(survey_ft[[subj]]), fixed = TRUE) == TRUE))
+  names(question_idx) = names(survey_ft)
+  
+  question_answer = lapply(names(survey_ft), function(subj) {rbindlist(survey_ft[[subj]][question_idx[[subj]]])})
+  names(question_answer) = names(survey_ft)
+  
+  q_var = unlist(lapply(subj_list, function(subj) rmssd(question_answer[[subj]]$ans_num, na.rm = T)))
+  return(q_var)
+}
+
+get_sleep_param = function(subj){
+  print(subj)
+  sleep_file = paste0("~/Documents/xia_gps/beiwe_output_043020/Results/Group/sleep/",subj,"_beiwe.RData")
+  if (file.exists(sleep_file)){
+    load(sleep_file)
+    as.numeric(unlist(data.frame(beiwe$param_est, hr_sleep_var = rmssd(beiwe$sleep_est$beiwe_waketime - beiwe$sleep_est$beiwe_bedtime), 
+               sl_time = rmssd(beiwe$sleep_est$beiwe_bedtime),
+               wk_time = rmssd(beiwe$sleep_est$beiwe_waketime))))
+  } else {
+    as.numeric(unlist(data.frame(id = subj, mu_s = NA, mu_w = NA, sd_s = NA, sd_w = NA, 
+               lambda_s = NA, lambda_w = NA, hr_sleep_var = NA,
+               sl_time = NA, wk_time = NA)))
+  }
+}
+
+sleep_param = t(sapply(subj_list,get_sleep_param))
+colnames(sleep_param) = c("subj", "mu_s", "mu_w", "sd_s", "sd_w", "lambda_s", "lambda_w", "hr_sleep_var", "sl_time", "wk_time")
+
+
+
+ifd = value(acc_subj)
+survey_ft = readRDS(file.path(data_path,"Results/Group/survey_ft.rds"))
+
+q_list = substr(names(survey_ft$`26k56oo9`),1,29)
+
+q_list_long = names(survey_ft$`26k56oo9`)
+
+
+sleep_qs = 1:10
+mood_now_qs = 11:19
+mood_since_qs = 20:26
+
+sleep_qs_cat_var = sapply(subj_list, function(subj) rmssd(rbindlist(lapply(lapply(q_list[sleep_qs], get_question_ans),function(q) q[[subj]]))$ans_num))
+mood_now_qs_cat_var = sapply(subj_list, function(subj) rmssd(rbindlist(lapply(lapply(q_list[mood_now_qs], get_question_ans),function(q) q[[subj]]))$ans_num))
+mood_since_qs_cat_var = sapply(subj_list, function(subj) rmssd(rbindlist(lapply(lapply(q_list[mood_since_qs], get_question_ans),function(q) q[[subj]]))$ans_num))
+mood_all_qs_cat_var = sapply(subj_list, function(subj) rmssd(rbindlist(lapply(lapply(q_list[c(mood_now_qs,mood_since_qs)], get_question_ans),function(q) q[[subj]]))$ans_num))
+
+sleep_qs_var = sapply(subj_list, function(subj) mean(sapply(lapply(q_list[sleep_qs], get_question_ans),function(q) rmssd(q[[subj]]$ans_num,na.rm=T))))
+mood_now_qs_var = sapply(subj_list, function(subj) mean(sapply(lapply(q_list[mood_now_qs], get_question_ans),function(q) rmssd(q[[subj]]$ans_num,na.rm=T))))
+mood_since_qs_var = sapply(subj_list, function(subj) mean(sapply(lapply(q_list[mood_since_qs], get_question_ans),function(q) rmssd(q[[subj]]$ans_num,na.rm=T))))
+mood_all_qs_var = sapply(subj_list, function(subj) mean(sapply(lapply(q_list[c(mood_now_qs,mood_since_qs)], get_question_ans),function(q) rmssd(q[[subj]]$ans_num,na.rm=T))))
+
+
+q_var_list = as.data.frame(sapply(q_list, function(q) {print(q); get_question_variance(q)}))
+q_var_list[,c("sleep_cat","mood_cat","mood_since_cat","mood_all_cat","sleep_qs","mood_qs","mood_since_qs","mood_all_qs")] = cbind(sleep_qs_cat_var,mood_now_qs_cat_var,mood_since_qs_cat_var,mood_all_qs_cat_var,sleep_qs_var,mood_now_qs_var,mood_since_qs_var,mood_all_qs_var)
+
+#q_list_long = c(q_list_long,c("sleep_cat","mood_cat","mood_since_cat"))
+
+q_var_list = cbind(q_var_list,sleep_param[,2:10])
+
+#q_var_cor_mat = rquery.cormat(q_var_list, type = "full")
+
+
+get_q_var_pvals = function(question_of_interest){
+  print(question_of_interest)
+  q_var_lm_df = data.frame(acc_days = subj_acc_days$acc_days, gps_days = subj_days$`Days Collected`, mood_var = q_var_list[,question_of_interest], ifd_accgps =  value(acc_subj_cb_accgps), ifd_gps = value(acc_subj), age = psych_sum$admin_age, sex = as.factor(psych_sum$admin_sex))
+  
+  q_var_gps_fit = gam(ifd_gps ~ mood_var + gps_days + s(age) + sex, data = q_var_lm_df, method = "REML")
+  q_var_gps_p = summary(q_var_gps_fit)[[4]]['mood_var']
+  
+  q_var_accgps_fit = gam(ifd_accgps ~ mood_var + gps_days + acc_days + s(age) + sex, data = q_var_lm_df,  method = "REML")
+  q_var_accgps_p = summary(q_var_accgps_fit)[[4]]['mood_var']
+  
+  #q_var_lm_df$res_gps = update(q_var_gps_fit, ~.-mood_var)$residuals
+  #q_var_lm_df$res_accgps = update(q_var_accgps_fit, ~.-mood_var)$residuals
+  
+  #q_var_gps_res_fit = lm(res_gps ~ mood_var, data = q_var_lm_df)
+  #q_var_accgps_res_fit = lm(res_accgps ~ mood_var, data = q_var_lm_df)
+  
+  #q_var_gps_res_p = summary(q_var_gps_res_fit)[[4]][,4]['mood_var']
+  #q_var_accgps_res_p = summary(q_var_accgps_res_fit)[[4]][,4]['mood_var']
+  
+  #q_var_gps_res_cor = summary(q_var_gps_res_fit)[[8]]
+  #q_var_accgps_res_cor = summary(q_var_accgps_res_fit)[[8]]
+  
+  return(data.frame(p_gps = q_var_gps_p, p_accgps = q_var_accgps_p))
+}
+
+
+rmssd_sleep = sapply(subj_list, function(subj) rmssd(rbindlist(lapply(lapply(q_list[sleep_qs], get_question_ans),function(q) q[[subj]]))$ans_num))
+rmssd_mood_now = sapply(subj_list, function(subj) rmssd(rbindlist(lapply(lapply(q_list[mood_now_qs], get_question_ans),function(q) q[[subj]]))$ans_num))
+rmssd_mood_since = sapply(subj_list, function(subj) rmssd(rbindlist(lapply(lapply(q_list[mood_since_qs], get_question_ans),function(q) q[[subj]]))$ans_num))
+
+mean_sleep = sapply(subj_list, function(subj) mean(rbindlist(lapply(lapply(q_list[sleep_qs], get_question_ans),function(q) q[[subj]]))$ans_num, na.rm = T))
+mean_mood_now = sapply(subj_list, function(subj) mean(rbindlist(lapply(lapply(q_list[mood_now_qs], get_question_ans),function(q) q[[subj]]))$ans_num, na.rm = T))
+mean_mood_since = sapply(subj_list, function(subj) mean(rbindlist(lapply(lapply(q_list[mood_since_qs], get_question_ans),function(q) q[[subj]]))$ans_num, na.rm = T))
+
+q_var_list = as.data.frame(sapply(q_list, function(q) {print(q); get_question_variance(q)}))
+names(q_var_list) = paste0("rmssd_",names(q_var_list))
+q_mean_list = as.data.frame(sapply(q_list, function(q) {print(q); get_question_mean(q)}))
+names(q_mean_list) = paste0("mean_",names(q_mean_list))
+q_variable_list = cbind(q_var_list, q_mean_list,rmssd_sleep,rmssd_mood_now,rmssd_mood_since,mean_sleep,mean_mood_now,mean_mood_since)
+
+q_variable_pvals = as.data.frame(t(sapply(names(q_variable_list), get_q_var_pvals)))
+
+
+
+get_q_var_lm = function(question_of_interest){
+  q_var_lm_df = data.frame(acc_days = subj_acc_days$acc_days, gps_days = subj_days$`Days Collected`, mood_var = q_var_list[,question_of_interest], ifd_accgps =  value(acc_subj_cb_accgps), ifd_gps = value(acc_subj), age = psych_sum$admin_age, sex = as.factor(psych_sum$admin_sex))
+  q_var_gps_p = gam(ifd_gps ~ mood_var + gps_days + s(age) + sex, data = q_var_lm_df, method = "REML")
+  q_var_accgps_p = gam(ifd_accgps ~ mood_var  + gps_days + acc_days + s(age) + sex, data = q_var_lm_df, method = "REML")
+  
+  return(list(gps = q_var_gps_p, accgps = q_var_accgps_p))
+}
+
+q_var_pvals = as.data.frame(t(sapply(names(q_var_list), get_q_var_pvals)))
+q_var_pvals = q_var_pvals[which(q_var_pvals$p_gps <0.05 | q_var_pvals$p_accgps <0.05),]
+q_var_lms = lapply(rownames(q_var_pvals), get_q_var_lm)
+
+df_als_ari_ema = data.frame(als = psych_sum$sum_als, ari = psych_sum$sum_ari, ema = q_var_list$mood_since_cat)
+
+pdf(file.path(paste0(output_path,"mood_assess_pair.pdf")),height = 5,width = 5)
+pairs(df_als_ari_ema, lower.panel = NULL, 
+      upper.panel = upper.panel)
+dev.off() 
+
+```
+
+
+### Data quantity sensitivity test
+```{r cutoff plots}
+quant_set1 = quantile(subj_days$`Days Collected`,.07)
+quant_set2 = quantile(subj_days$`Days Collected`,.24)
+quant_set3 = quantile(subj_days$`Days Collected`,.36)
+
+plot(subj_days$`Days Collected`[order(subj_days$`Days Collected`)], pch = 16,
+     xlab = ("Subjets"), ylab= ("Days Collected"))
+abline(h = quant_set1)
+abline(h = quant_set2)
+abline(h = quant_set3)
+```
+
+```{r match stat}
+quant_set_subj_1 = which(subj_days$`Days Collected`>=quant_set1)
+gps_quant_match_cor_1 = calc_match_cor(gps_clean2_feature$subj_mat_1[value(quant_set_subj_1)], gps_clean2_feature$subj_mat_2[value(quant_set_subj_1)])
+gps_quant_acc_time_1 = calc_acc_time(gps_quant_match_cor_1, "max")
+gps_quant_acc_subj_1 = calc_acc_subj(gps_quant_match_cor_1)
+
+
+quant_set_subj_2 = which(subj_days$`Days Collected`>=quant_set2)
+gps_quant_match_cor_2 = calc_match_cor(gps_clean2_feature$subj_mat_1[value(quant_set_subj_2)], gps_clean2_feature$subj_mat_2[value(quant_set_subj_2)])
+gps_quant_acc_time_2 = calc_acc_time(gps_quant_match_cor_2, "max")
+gps_quant_acc_subj_2 = calc_acc_subj(gps_quant_match_cor_2)
+
+quant_set_subj_3 = which(subj_days$`Days Collected`>=quant_set3)
+gps_quant_match_cor_3 = calc_match_cor(gps_clean2_feature$subj_mat_1[value(quant_set_subj_3)], gps_clean2_feature$subj_mat_2[value(quant_set_subj_3)])
+gps_quant_acc_time_3 = calc_acc_time(gps_quant_match_cor_3, "max")
+gps_quant_acc_subj_3 = calc_acc_subj(gps_quant_match_cor_3)
+
+```
+
+
+### Clinical Dx
+```{r }
+beiwe_dx = read.csv("/Users/hxia/Documents/xia_gps/data/clinical_data/beiwe_dx.csv")
+beiwe_dx = beiwe_dx[-39,]
+
+dx_sum_1 = rbind(beiwe_dx$AXIS1_DESC1,beiwe_dx$AXIS1_DESC2,beiwe_dx$AXIS1_DESC3,beiwe_dx$AXIS1_DESC4,beiwe_dx$AXIS1_DESC5,beiwe_dx$AXIS1_DESC6,beiwe_dx$AXIS1_DESC7,beiwe_dx$AXIS1_DESC8,beiwe_dx$AXIS1_DESC9,beiwe_dx$AXIS1_DESC10)
+
+dx_sum_1[grepl("Attention",dx_sum_1)] = "ADHD"
+dx_sum_1[grepl("Bipolar",dx_sum_1)] = "Bipolar Disorder"
+dx_sum_1[grepl("Alcohol",dx_sum_1)] = "Substance Use"
+dx_sum_1[grepl("Cannabis",dx_sum_1)] = "Substance Use"
+dx_sum_1[grepl("Cocaine",dx_sum_1)] = "Substance Use"
+dx_sum_1[grepl("Substance",dx_sum_1)] = "Substance Use"
+dx_sum_1[grepl("Polysubstance",dx_sum_1)] = "Substance Use"
+dx_sum_1[grepl("Abuse",dx_sum_1)] = "Substance Use"
+dx_sum_1[grepl("Major Depressive ",dx_sum_1)] = "MDD"
+dx_sum_1[grepl("Panic Disorder",dx_sum_1)] = "Panic Disorder"
+dx_sum_1[grepl("Prodromal",dx_sum_1)] = "Prodromal"
+dx_sum_1[grepl("w/",dx_sum_1)] = "Prodromal"
+dx_sum_1[grepl("Condition on Axis I",dx_sum_1)] = "No Axis I Dx"
+dx_sum_1[grepl("Schizoaffective",dx_sum_1)] = "Schizoaffective Disorder"
+dx_sum_1[grepl("null",dx_sum_1)] = NA
+dx_sum_1[apply(dx_sum_1, 2,duplicated)] = NA
+
+table(dx_sum_1)
+
+dx_sum_1_sum = dx_sum_1
+dx_sum_1_sum[grepl("Anxiety", dx_sum_1_sum)] = "Anxiety Disorder"
+dx_sum_1_sum[grepl("Obsessive", dx_sum_1_sum)] = "Anxiety Disorder"
+dx_sum_1_sum[grepl("Panic", dx_sum_1_sum)] = "Anxiety Disorder"
+dx_sum_1_sum[grepl("Posttraumatic", dx_sum_1_sum)] = "Anxiety Disorder"
+dx_sum_1_sum[grepl("Social", dx_sum_1_sum)] = "Anxiety Disorder"
+
+dx_sum_1_sum[grepl("Bipolar", dx_sum_1_sum)] = "Mood Disorder"
+dx_sum_1_sum[grepl("Depressive", dx_sum_1_sum)] = "Mood Disorder"
+dx_sum_1_sum[grepl("MDD", dx_sum_1_sum)] = "Mood Disorder"
+dx_sum_1_sum[grepl("Mood", dx_sum_1_sum)] = "Mood Disorder"
+
+dx_sum_1_sum[grepl("Schizoaffective", dx_sum_1_sum)] = "Psychotic Disorder"
+dx_sum_1_sum[apply(dx_sum_1_sum, 2,duplicated)] = NA
+table(dx_sum_1_sum)
+
+
+dx_sum_2 = rbind(beiwe_dx$AXIS2_DESC1)
+dx_sum_2[grepl("Axis II",dx_sum_2)] = "No or Deferred Axis II"
+dx_sum_2[grepl("null",dx_sum_2)] = "No or Deferred Axis II"
+table(dx_sum_2)
+
+dx_sum_2_sum = dx_sum_2
+dx_sum_2_sum[grepl("Disorder", dx_sum_2_sum)] = "Personality Disorder"
+table(dx_sum_2_sum)
+
+
+dx_sum_all = rbind(dx_sum_1,dx_sum_1_sum,dx_sum_2, dx_sum_2_sum)
+rownames(dx_sum_all) = c(paste0("AxisI_Ind",1:10), paste0("AxisI_Sum",1:10), "AxisII_Ind", "AxisII_Sum")
+
+
+colnames(dx_sum_all) = beiwe_dx$BBLID
+dx_sum_all = as.data.frame(t(dx_sum_all))
+dx_sum_all$BBLID  = beiwe_dx$BBLID
+
+acc_subj_mood_df = data.frame(accgps = acc_subj_cb_accgps, gps = acc_subj,acc = acc_acc_subj, BBLID = psych_sum$BBLID, beiweiID = subj_list, gps_days = subj_days$`Days Collected`, acc_days = subj_acc_days$acc_days, df_als_ari_ema, age = psych_sum$admin_age, sex = as.factor(psych_sum$admin_sex))
+
+acc_subj_dx_sum = base::merge(dx_sum_all,acc_subj_mood_df)
+
+acc_subj_dx_sum_fit = gam(accgps ~ AxisII_Sum + gps_days + acc_days + sex + s(age), data = acc_subj_dx_sum, method = "REML")
+summary(lm(ari ~ AxisII_Sum + age + sex, acc_subj_dx_sum))
+
+
+saveRDS(acc_subj_dx_sum, "~/Documents/xia_gps/beiwe_output_043020/Results/Group/acc_dx_demo_summary.RDS")
+```
+
+```{}
+
+edge_data$accgps_res = gam(accgps  ~ s(admin_age) + admin_sex + gps_days + acc_days  + motion , data = edge_data, method = "REML")$residuals
+
+resample_list = createResample(1:41,times = 1000, list = T)
+lasso_fit_boot = lapply(resample_list, function(sub_seq) tryCatch(summary(get_final_lass(edge_data,edge_vars, sub_seq)$beta), error =function(e) NULL))
+
+for (edge_i in lasso_beta_df$i){
+  df_i = which(lasso_beta_df$i == edge_i)
+  edge_x_all = unlist(sapply(lasso_fit_boot, function(fit) subset(fit,i == edge_i)$x))
+  lasso_beta_df$x_mean[df_i] = mean(edge_x_all)
+  lasso_beta_df$sd[df_i] = sd(edge_x_all)
+  lasso_beta_df$x975[df_i] = mean(edge_x_all) + 1.96*(sd(edge_x_all)/sqrt(length(edge_x_all)))
+  lasso_beta_df$x025[df_i] = mean(edge_x_all) - 1.96*(sd(edge_x_all)/sqrt(length(edge_x_all)))
+}
+print(lasso_beta_df)
+
+
+```
+
+
+### 24. Misc Info
+```{r message=FALSE, warning=FALSE}
+#sessionInfo()
+```
+

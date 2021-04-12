@@ -1,0 +1,252 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r include=FALSE}
+library(dplyr)
+helper_path = "~/Documents/GitHub/SmartphoneSensorPipeline/Processing/"
+lapply(paste0(helper_path,list.files(helper_path)),source)
+project_path = "~/Documents/xia_gps/beiwe_output_043020/"
+data_path = file.path(project_path,"data/raw_data")
+out_path = file.path(project_path,"Preprocessed_Data/Individual")
+result_path = file.path(project_path,"Results/Group")
+subj_list = list.files(out_path)
+```
+
+
+```{r power state, message=FALSE, include=FALSE}
+power_ft = data.frame()
+
+for (subj in subj_list) {
+  print(subj)
+  power_state = readRDS(file.path(out_path, subj, "powerstate_data.rds"))
+  days_in_subj = unique(power_state$days)
+  
+    for (date in days_in_subj){
+      day_data = subset(power_state, days == date)
+      day_scr_on_off = subset(day_data, event == "Screen turned on" | 
+                                        event == "Screen turned off" | 
+                                        event == "Unlocked" |
+                                        event == "Locked")
+      if (dim(day_scr_on_off)[1] > 1) {
+        day_scr_on_off$sucdif = lead(day_scr_on_off$hours, n=1, default = 24) - day_scr_on_off$hours
+        
+        day_scr = list()
+        day_scr$on = subset(day_scr_on_off, event == "Screen turned on" | event == "Unlocked")$sucdif
+        day_scr$off = subset(day_scr_on_off, event == "Screen turned off" |  event == "Locked")$sucdif
+        
+        #day_scr$idl = subset(day_data, event == "Device Idle (Doze) state change signal received; device in idle state.")$sucdif
+        #day_scr$Nidl = subset(day_data, event == "Device Idle (Doze) state change signal received; device not in idle state.")$sucdif
+        #day_scr$shutdown = subset(day_data, event == "Device shut down signal received")$sucdif
+        
+        power_subj_ft = data.frame(
+          subject = subj,
+          date = date,
+          day_of_week = weekdays(as.Date(date)),
+          sumduration = sum(day_scr$on, na.rm =T),
+          maxduration = max(day_scr$on, na.rm =T),
+          minduration = min(day_scr$on, na.rm =T),
+          aveduration = mean(day_scr$on, na.rm =T),
+          stdduration = sd(day_scr$on, na.rm =T),
+          countepisode = length(day_scr$on))
+          
+        power_ft = rbind(power_ft, power_subj_ft)
+    }
+  }
+}
+
+saveRDS(power_ft, file = file.path(result_path,"power_ft.rds"))
+```
+
+
+
+```{r survey, message=FALSE, warning=TRUE, include=FALSE}
+survey_subj = list()
+
+for (subj in subj_list) {
+  #subj = "16xv6ko1"
+  survey = readRDS(file.path(out_path, subj, "survey_data.rds"))
+  if ("0" %in% as.character(survey$answer)) {
+    zero_adjust = T
+    print(paste(subj, "zero present"))
+  } else {
+    zero_adjust = F
+    print(subj)
+  }
+  survey$hours = hours(survey$timestamp)$hours
+  survey$day = hours(survey$timestamp)$days
+  survey_ids = unique(survey$survey_id)
+  question_ids = unique(survey$question.text)
+  question_list = list()
+  for (question in question_ids){
+    #
+    #question = question_ids[8]
+    question_df = subset(survey, question.text == question)
+    #print(which(question_ids == question))
+    #all possible answer options for this question
+    answer_options = question_df$`question.answer.options`[1]
+    answer_options = substr(answer_options,2,nchar(answer_options)-1)
+    answers = strsplit(answer_options,";")[[1]] 
+    answers = gsub("\\[|\\]", "", answers)
+    #
+    if (nchar(question_df$answer[1]) > 3 | question_df$answer[1] == "No" | question_df$answer[1] == "Yes"){
+      answer_number = unlist(lapply(question_df$answer, function(x) if (x == "NO_ANSWER_SELECTED" | x == "" | x =="NOT_PRESENTED") {return(NA)} else {which(answers ==x)}))
+      question_df_s = data.frame(ans_num = answer_number, ans_text = question_df$answer, date = question_df$day, hour = question_df$hours, org_ans = question_df$answer)
+    } else {
+      org_ans = question_df$answer
+      question_df$answer = substr(question_df$answer,1,1)
+      if (zero_adjust == T) {
+        answer_number = unlist(lapply(question_df$answer, function(x) if (x == "N" | x == "" | x =="N") {return(NA)} else {as.numeric(x) + 1}))
+      } else {
+        answer_number = unlist(lapply(question_df$answer, function(x) if (x == "N" | x == "" | x =="N") {return(NA)} else {as.numeric(x) + 0}))
+      }
+      answer_text = unlist(lapply(answer_number, function(x) 
+                      if (is.na(x)) 
+                        {"No_answer"} else {as.character((answers[x]))}))
+      question_df_s = data.frame(ans_num = answer_number, ans_text = answer_text, date = question_df$day, hour = question_df$hours, org_ans = org_ans)
+    }
+    
+    question_list[[question]] = question_df_s
+    }
+  survey_subj[[subj]] = question_list
+}
+
+saveRDS(survey_subj, file = file.path(result_path,"survey_ft.rds"))
+```
+
+```{r accelerometer, include=FALSE}
+options(scipen = 999)
+library(data.table)
+library(dplyr)
+library(purrr)
+helper_path = "~/Documents/GitHub/SmartphoneSensorPipeline/Processing/"
+helper_path = "../SmartphoneSensorPipeline/Processing/"
+lapply(paste0(helper_path,list.files(helper_path)),source)
+project_path = "~/Documents/xia_gps/beiwe_output_043020/"
+raw_data_path = "/Volumes/LaCie/data/raw_data/"
+raw_data_path = "./raw_data"
+subj_list = list.files(raw_data_path)
+
+out_path = file.path(project_path,"Preprocessed_Data/Individual")
+
+result_path = "../beiwe_output_043020/Results/Individual/"
+result_path = file.path(project_path,"Results/Group")
+
+
+
+
+daily_acc_metric = function(acc_data){
+  #RAPIDS
+  acceleration = sqrt((acc_data$x)^2+(acc_data$y)^2+(acc_data$z)^2)
+  maxmagnitude = max(acceleration, na.rm = T)
+  minmagnitude = min(acceleration, na.rm = T)
+  avgmagnitude = mean(acceleration, na.rm = T)
+  medianmagnitude = median(acceleration, na.rm = T)
+  stdmagnitude = sd(acceleration, na.rm = T)
+  
+  rapids_df = data.frame(date = unique(acc_data$date), 
+                         maxmagnitude = maxmagnitude,
+                         minmagnitude = minmagnitude,
+                         avgmagnitude = avgmagnitude,
+                         medianmagnitude = medianmagnitude,
+                         stdmagnitude = stdmagnitude)
+  
+  
+  #PANDA
+  acc_data$minute = floor(acc_data$hour*60)
+  uni_minutes = unique(acc_data$minute)
+  day_var_df = data.frame()
+  for (minu in uni_minutes){
+    acc_data_min = subset(acc_data, minute == minu)
+    if (dim(acc_data_min)[1] >1) {
+    var_x = var(acc_data_min$x)
+    var_y = var(acc_data_min$y)
+    var_z = var(acc_data_min$z)
+    var_m = var_x + var_y + var_z
+    m_df = data.frame(date = unique(acc_data$date), hour = minu/60,  minute = minu, var_m = var_m)
+    day_var_df = rbind(day_var_df, m_df) } else {
+      next
+    } 
+  }
+  
+  exertional_abs = length(which(day_var_df$var_m >=0.15))
+  exertional_rel = length(which(day_var_df$var_m >=0.15))/length(day_var_df$var_m)
+  exertional_day = exertional_rel*1440
+  exertional_hr = exertional_day/60
+  panda_df = data.frame(exertional_abs = exertional_abs,
+                        exertional_rel = exertional_rel,
+                        exertional_day = exertional_day,
+                        exertional_hr = exertional_hr)
+  
+  #
+  day_acc_df = cbind (rapids_df,panda_df)
+  return(day_acc_df)
+  
+}
+
+calc_acc_metric = function(subj_acc_data){
+  subj_acc_metric = data.frame()
+  subj_acc_data$timestamp_c = as.numeric(unlist(lapply(subj_acc_data$timestamp, function(t) substr(as.character(t),1,10))))
+  subj_acc_data[,c("hour","date")] = hours(subj_acc_data$timestamp_c)
+  saveRDS(subj_acc_data,file.path(result_path,"../Individual",subj ,"accelerometer_raw.rds") )
+  subj_dates = unique(subj_acc_data$date)
+  for (subj_date in subj_dates) {
+    print(paste(subj,subj_date))
+    subj_acc_metric = rbind(subj_acc_metric, daily_acc_metric(subset(subj_acc_data, date == subj_date)))
+  }
+  return(subj_acc_metric)
+}
+
+
+read_csv_chx = function (csv_file_path) {
+  print(paste(subj, "...concatenating...", which(csv_file_path == csv_files), "in", length(csv_files), " files"))
+  return(read.csv(csv_file_path))
+}
+
+subj_acc_metrics = data.frame()
+for (subj in subj_list) {
+  subj_acc_metrics = data.frame()
+  rds_file = file.path(result_path,"../Individual",subj ,"accelerometer_ft.rds")
+    #if (file.exists(rds_file)){
+    #  print(paste(subj,"already processed"))
+    #  next
+    #} else {
+  csv_files = list.files(file.path(raw_data_path, subj, "accelerometer/"),full.names = T)
+  #csv_files = list.files(file.path(raw_data_path, subj, "accelerometer/"))
+  #subj_csv_days = unique(unlist(lapply(csv_files, function(x) strsplit(x," ")[[1]][1])))
+  #subj_csv_on_day = list.files(file.path(raw_data_path ,subj, "accelerometer"), pattern = paste0("^",foo),full.names = T)
+  print(paste(subj, "...concatenating...", length(csv_files), "files"))
+  
+  #subj_acc_data = rbindlist(lapply(subj_csv_on_day, function(csv_file_path) read_csv_chx(csv_file_path)))
+  subj_acc_data = lapply(csv_files, function(csv_file_path) read_csv_chx(csv_file_path))
+  #subj_acc_data$day = 
+  print("doing the rbind")
+  subj_acc_data = rbindlist(subj_acc_data)
+  #for (csv_file_path in csv_files){
+  
+  #  print(paste(subj, "...concatenating...", which(csv_file_path == csv_files), "in", length(csv_files), " files"))
+  #  file_acc_data = read.csv(csv_file_path)
+  #  subj_acc_data = rbind(subj_acc_data, file_acc_data)
+  #}
+  
+  print("calcing metrics")
+  subj_acc_metric = calc_acc_metric(subj_acc_data)
+  subj_acc_metric$subject = subj
+  dir.create(file.path(result_path,"../Individual",subj))
+  saveRDS(subj_acc_metric, file.path(result_path,"../Individual",subj ,"accelerometer_ft.rds"))
+  #subj_acc_metrics = rbind(subj_acc_metrics, subj_acc_metric)
+  #  }
+}
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+

@@ -1,0 +1,513 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r load processed data}
+sen = 100
+processed_data_file = paste0("~/Documents/xia_gps/beiwe_output_043020/Results/Group/part_1000_sen",sen,".RData")
+load(processed_data_file)
+output_path = "~/Google Drive/academia/projects/main_projects/gps/Manuscript/Figures/resource/"
+```
+
+
+```{r plot data missingness}
+p_all_data_minmissing = minMiss_histplot(gps_df,200, "All Data") + xlim(1296,1440)
+p_head_tail_minmissing = minMiss_histplot(gps_df_clean,200, "After Removing 1st and Last Days") + xlim(1296,1440)
+gps_df_clean2_100 = subset(gps_df_clean, MinsMissing < 1440) 
+p_100_minmissing = minMiss_histplot(gps_df_clean2_100,200, "Sen 100") + xlim(1296,1440)
+gps_df_clean2_90 = subset(gps_df_clean, MinsMissing < 1439)
+p_90_minmissing = minMiss_histplot(gps_df_clean2_90,200, "Sen 90") + xlim(1296,1440)
+gps_df_clean2_85 = subset(gps_df_clean, MinsMissing < 1437)
+p_85_minmissing = minMiss_histplot(gps_df_clean2_85,200, "Sen 85") + xlim(1296,1440)
+gps_df_clean2_80 = subset(gps_df_clean, MinsMissing < 1435)
+p_80_minmissing = minMiss_histplot(gps_df_clean2_80,200, "Sen 80") + xlim(1296,1440)
+gps_df_clean2_75 = subset(gps_df_clean, MinsMissing < 1430)
+p_75_minmissing = minMiss_histplot(gps_df_clean2_75,200, "Sen 75") + xlim(1296,1440)
+
+pdf(file.path(output_path,paste0("all_data_minmissing.pdf")),height = 3,width = 12)
+p_all_data_minmissing
+dev.off()
+
+pdf(file.path(output_path,paste0("head_tail_minmissing.pdf")),height = 3,width = 12)
+p_head_tail_minmissing
+dev.off()
+
+pdf(file.path(output_path,paste0("s100_minmissing.pdf")),height = 3,width = 12)
+p_100_minmissing
+dev.off()
+
+pdf(file.path(output_path,paste0("s90_minmissing.pdf")),height = 3,width = 12)
+p_90_minmissing
+dev.off()
+
+pdf(file.path(output_path,paste0("s85_minmissing.pdf")),height = 3,width = 12)
+p_85_minmissing
+dev.off()
+
+pdf(file.path(output_path,paste0("s80_minmissing.pdf")),height = 3,width = 12)
+p_80_minmissing
+dev.off()
+
+pdf(file.path(output_path,paste0("s75_minmissing.pdf")),height = 3,width = 12)
+p_75_minmissing
+dev.off()
+
+```
+
+```{r waterfall chart}
+wf_vals = c(3317,-82,-79,-216,-356,-171)
+wf_labels = c("all","1st&last","100%","90%","80%","75%")
+wf_df = data.frame(val = wf_vals, lab = wf_labels)
+p_wf = waterfall(.data = wf_df, calc_total = T, rect_text_size = 2) + theme_cowplot() + labs(y= "Days", x = "")
+
+pdf(file.path(output_path,paste0("waterfall.pdf")),height = 3,width = 24)
+p_wf
+dev.off()
+```
+
+
+```{r plot similarity matrix no ranking}
+gps_wide_matrix = data.frame()
+
+for (subj in names(subj_seq)){
+  #if ((subj %in% subj_days$IID[which(subj_days$`Days Collected`<=10)]) == T) {
+    for (part in 1:5){
+      half_1 = gps_clean2_feature$subj_mat_1[[subj]][[part]]$cor
+      half_2 = gps_clean2_feature$subj_mat_2[[subj]][[part]]$cor
+      half_1_half_2 = c(half_1,half_2)
+      gps_wide_matrix = rbind(gps_wide_matrix,half_1)
+      gps_wide_matrix = rbind(gps_wide_matrix,half_2)
+      }
+    #}
+}
+
+gps_wide_matrix = t(gps_wide_matrix)
+gps_corplot = rquery.cormat(gps_wide_matrix, type = "full",graph=FALSE)
+
+pdf(file.path(output_path,paste0("similarity matrix no rank",sen,".pdf")),height = 4,width = 5)
+
+  levelplot(gps_corplot$r,scales=list(draw=FALSE),col.regions = rev(rainbow(1000))[-c(1:20)], region =T, ylab.right = "Pearson correlation", main=list(label='GPS Feature Similarity'),xlab="",ylab="")
+dev.off()
+
+```
+
+
+```{r plot similarity matrix ranked by days}
+
+subj_days = gps_df_clean2 %>% group_by(IID) %>% dplyr::tally(name = "Days Collected")
+subj_days = subj_days[which(subj_days$IID %in% names(subj_seq)),]
+
+gps_wide_matrix = data.frame()
+
+for (subj in arrange(subj_days,`Days Collected`)$IID){
+    for (part in 1:5){
+      half_1 = gps_clean2_feature$subj_mat_1[[subj]][[part]]$cor
+      half_2 = gps_clean2_feature$subj_mat_2[[subj]][[part]]$cor
+      half_1_half_2 = c(half_1,half_2)
+      gps_wide_matrix = rbind(gps_wide_matrix,half_1)
+      gps_wide_matrix = rbind(gps_wide_matrix,half_2)
+      }
+}
+
+gps_wide_matrix = t(gps_wide_matrix)
+gps_corplot = rquery.cormat(gps_wide_matrix, type = "full",graph=FALSE)
+gps_corplot$subj = arrange(subj_days,`Days Collected`)$IID
+
+pdf(file.path(output_path,paste0("similarity matrix with rank",sen,".pdf")),height = 4,width = 5)
+
+  levelplot(gps_corplot$r,scales=list(draw=FALSE),col.regions = rev(rainbow(1000))[-c(1:20)], region =T, ylab.right = "Pearson correlation", main=list(label='GPS Feature Similarity'),xlab="",ylab="")
+dev.off()
+
+pdf(file.path(output_path,paste0("subj_days",sen,".pdf")),height = 3,width = 6)
+plot(subj_days$`Days Collected`[order(subj_days$`Days Collected`,decreasing =F)], col = "black", type = "l")
+dev.off()
+```
+
+```{r histogram prediction}
+df = data.frame(val = acc_time)
+p = ggplot(df, aes(x=val)) + 
+    geom_histogram(bins = 16, fill = "#F69274", size = 2) + 
+    theme_cowplot() +
+    labs(title=paste("Covariance Features: \n Average Accuracy Across",part_times,"Data Partitions"),
+         x  = "GPS Footprint Prediction Accuracy", y = "Count") + 
+  #geom_density(alpha=.2) +
+    theme(plot.title = element_text(hjust = 0.5))
+
+p = p + geom_vline(aes(xintercept=mean(val)),
+            color="black", linetype="dashed")
+p
+pdf(file.path(paste0(output_path,"cov_hist",sen,".pdf")),height = 4,width = 5)
+p
+dev.off()
+```
+
+
+```{r histogram prediction permutation}
+df = data.frame(val = perm_acc_time_all)
+p = ggplot(df, aes(x=val)) + 
+    geom_histogram(bins = 8, fill = "#9ECAE1", size = 2) + 
+    theme_cowplot() +
+    labs(title=paste("Covariance Features: \n Average Accuracy Across",part_times,"Data Partitions"),
+         x  = "GPS Footprint Prediction Accuracy", y = "Count") + 
+  #geom_density(alpha=.2) +
+    theme(plot.title = element_text(hjust = 0.5))
+
+p = p + geom_vline(aes(xintercept=mean(val)),
+            color="black", linetype="dashed")
+p
+pdf(file.path(paste0(output_path,"cov_hist_perm",sen,".pdf")),height = 4,width = 5)
+p
+dev.off()
+```
+`
+
+``{r plot subj analysis with perm, fig.width=8, fig.height=4}
+subj_df <- data.frame(x=names(subj_seq))
+subj_df$y = acc_subj
+subj_df$y_perm = unlist(perm_subj$acc)
+subj_df = subj_df[order(subj_df$y),]
+p_subj_cor_perm = ggplot(subj_df, aes(x = reorder(x, y), y = value)) + 
+  geom_point(aes(y = y), color = "#F69274", size = 2) + 
+  geom_point(aes(y = y_perm), color = "#9ECAE1", size =2 ) +
+  theme_cowplot() + 
+  labs(title = paste("Cor Features \n Subject Level Accuracy Across",part_times,"Data Partitions"), 
+       x = "Subjects", y = "GPS Footprint Prediction Accuracy") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8), plot.title = element_text(hjust = 0.5))
+
+pdf(file.path(paste0(output_path,"cov_subj",sen,".pdf")),height = 4,width = 5)
+p_subj_cor_perm
+dev.off()
+```
+
+```{r mean and variability features and confounding plot}
+mean_ft_plots = Reduce(`+`, mean_plots)
+rmssd_ft_plots = Reduce(`+`, var_plots)
+
+pdf(file.path(paste0(output_path,"mean_ft_plots.pdf")),height = 8,width = 12)
+mean_ft_plots
+dev.off()
+
+pdf(file.path(paste0(output_path,"rmssd_ft_plots.pdf")),height = 8,width = 12)
+rmssd_ft_plots
+dev.off()
+
+pdf(file.path(paste0(output_path,"confoudning_plots.pdf")),height = 12,width = 20)
+Reduce(`+`, sp_plots)
+dev.off()
+
+```
+
+
+
+
+```{r histogram prediction combined}
+df = data.frame(val = acc_time_cb)
+p = ggplot(df, aes(x=val)) + 
+    geom_histogram(bins = 16, fill = "#F69274", size = 2) + 
+    theme_cowplot() +
+    labs(title=paste("Combined Features: \n Average Accuracy Across",part_times,"Data Partitions"),
+         x  = "Prediction Accuracy", y = "Count") + 
+  #geom_density(alpha=.2) +
+    theme(plot.title = element_text(hjust = 0.5))
+
+p = p + geom_vline(aes(xintercept=mean(val)),
+            color="black", linetype="dashed")
+p
+pdf(file.path(paste0(output_path,"Combined_hist",sen,".pdf")),height = 4,width = 5)
+p
+dev.off()
+```
+
+
+```{r histogram prediction permutation combined}
+df = data.frame(val = unlist(perm_cb_cor$perm_acc_time))
+p = ggplot(df, aes(x=val)) + 
+    geom_histogram(bins = 8, fill = "#9ECAE1", size = 2) + 
+    theme_cowplot() +
+    labs(title=paste("Combined Features: \n Average Accuracy Across",part_times,"Data Partitions"),
+         x  = "Prediction Accuracy", y = "Count") + 
+  #geom_density(alpha=.2) +
+    theme(plot.title = element_text(hjust = 0.5))
+
+p = p + geom_vline(aes(xintercept=mean(val)),
+            color="black", linetype="dashed")
+p
+pdf(file.path(paste0(output_path,"Combined_hist_perm",sen,".pdf")),height = 4,width = 5)
+p
+dev.off()
+```
+
+
+```{r plot subj analysis with perm combined, fig.width=8, fig.height=4}
+subj_df <- data.frame(x=names(subj_seq))
+subj_df$y =  acc_subj_cb
+subj_df$y_perm = unlist(perm_subj_cb$acc)
+subj_df = subj_df[order(subj_df$y),]
+p_subj_cor_perm = ggplot(subj_df, aes(x = reorder(x, y), y = value)) + 
+  geom_point(aes(y = y), color = "#F69274", size = 2) + 
+  geom_point(aes(y = y_perm), color = "#9ECAE1", size =2 ) +
+  theme_cowplot() + 
+  labs(title = paste("Combined Features \n Subject Level Accuracy Across",part_times,"Data Partitions"), 
+       x = "Subjects", y = "Prediction Accuracy") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8), plot.title = element_text(hjust = 0.5))
+
+pdf(file.path(paste0(output_path,"Combined_subj_",sen,".pdf")),height = 4,width = 5)
+p_subj_cor_perm
+dev.off()
+```
+```{r all different features combined}
+df_diff_time = data.frame(cov = acc_time, mean = acc_time_mean_cor, rmssd = acc_time_rmssd_cor, cb = acc_time_cb)
+df_diff_time_long = gather(df_diff_time, feature, accuracy, cov:cb, factor_key=TRUE)
+mu = ddply(df_diff_time_long, "feature", summarise, grp.mean=mean(accuracy))
+p_diff_feature = ggplot(df_diff_time_long, aes(x=accuracy,color = feature, fill = feature)) + 
+    geom_density(size = 1, alpha = 0) + 
+    #geom_histogram(aes(y=..density..), alpha=0.2, 
+    #            position="identity") + 
+    geom_vline(data=mu, aes(xintercept=grp.mean, color=feature),
+             linetype="dashed") +
+    labs(y = "Density", x = "GPS Footprint Prediction Accuracy") + 
+    theme_cowplot() +
+    theme(legend.position="top")
+
+pdf(file.path(paste0(output_path,"diff_features_density",sen,".pdf")),height = 4,width = 10)
+p_diff_feature
+dev.off()   
+
+```
+
+```{r all different features combined subj}
+df_diff_subj = data.frame(subj = 1:41, cov = value(acc_subj[order(acc_subj)]), mean = value(acc_subj_mean_cor[order(acc_subj_mean_cor)]) , rmssd = value(acc_subj_rmssd_cor[order(acc_subj_rmssd_cor)]), cb =value(acc_subj_cb[order(acc_subj_cb)]) , cov_perm = value(unlist(perm_subj$acc)), mean_perm =  value(unlist(perm_subj_mean$acc)), rmssd_perm = value(unlist(perm_subj_rmssd$acc)), cb_perm = value(unlist(perm_subj_cb$acc)))
+
+p_subj_diff = ggplot(df_diff_subj, aes(x = reorder(subj,cov), y = cov)) + 
+  geom_point(aes(y = cov), color = "#F8766D", size = 2) + 
+  geom_point(aes(y = mean), color = "#7CAE00", size =2 ) +
+  geom_point(aes(y = rmssd), color = "#00BFC4", size =2 ) +
+  geom_point(aes(y = cb), color = "#C77CFF", size =2 ) +
+    geom_point(aes(y = cov_perm), color = "#848484", size = 2, alpha = 0.5) + 
+  geom_point(aes(y = mean_perm), color = "#848484", size =2, alpha = 0.5 ) +
+  geom_point(aes(y = rmssd_perm), color = "#848484", size =2, alpha = 0.5 ) +
+  geom_point(aes(y = cb_perm), color = "#848484", size =2, alpha = 0.5 ) +
+  theme_cowplot() + 
+  labs(x = "Subjects", y = "GPS Footprint \n Prediction Accuracy")
+
+pdf(file.path(paste0(output_path,"diff_features_subj",sen,".pdf")),height = 4,width = 10)
+p_subj_diff
+dev.off()   
+```
+
+```{r get different sensitivity data}
+acc_subj_sens = list()
+acc_time_sens = list()
+sen_seq = paste0("sen",c(100,90,80,70))
+for (sensitivity in sen_seq){
+  print(paste("loading",sen))
+  data_file = paste0("~/Documents/xia_gps/beiwe_output_043020/Results/Group/part_1000_",sensitivity,".RData")
+  load(data_file)
+  acc_subj_sens[[sensitivity]] = acc_subj
+  acc_time_sens[[sensitivity]] = acc_time
+}
+```
+```{r all different sens time plots}
+df_sens_time = data.frame(sen100 = acc_time_sens$sen100, sen90 = acc_time_sens$sen90, sen80 = acc_time_sens$sen80, sen70 = acc_time_sens$sen70)
+df_sens_time_long = gather(df_sens_time, sensitivity, accuracy, sen100:sen70, factor_key=TRUE)
+mu = ddply(df_sens_time_long, "sensitivity", summarise, grp.mean=mean(accuracy))
+p_diff_feature = ggplot(df_sens_time_long, aes(x=accuracy,color = sensitivity, fill = sensitivity)) + 
+    geom_density(size = 1, alpha = 0) + 
+    #geom_histogram(aes(y=..density..), alpha=0.2, 
+    #            position="identity") + 
+    geom_vline(data=mu, aes(xintercept=grp.mean, color=sensitivity),
+             linetype="dashed") +
+    labs(y = "Density", x = "GPS Footprint Prediction Accuracy") + 
+    theme_cowplot() +
+    theme(legend.position="top")
+
+pdf(file.path(paste0(output_path,"diff_sensitivity_density",sen,".pdf")),height = 4,width = 10)
+p_diff_feature
+dev.off()   
+
+```
+
+```{r all different sens subj}
+df_sens_subj = data.frame(subj = 1:41, sen100 = value(acc_subj_sens$sen100[order(acc_subj_sens$sen100)]), sen90 = value(acc_subj_sens$sen90[order(acc_subj_sens$sen90)]) , sen80 = c(0,0,value(acc_subj_sens$sen80[order(acc_subj_sens$sen80)])), sen70 =c(0,0,0,0,0,0,0,value(acc_subj_sens$sen70[order(acc_subj_sens$sen70)])))
+
+p_subj_diff = ggplot(df_sens_subj, aes(x = reorder(subj,sen100), y = sen100)) + 
+  geom_point(aes(y = sen100), color = "#F8766D", size = 2) + 
+  geom_point(aes(y = sen90), color = "#7CAE00", size =2 ) +
+  geom_point(aes(y = sen80), color = "#00BFC4", size =2 ) +
+  geom_point(aes(y = sen70), color = "#C77CFF", size =2 ) +
+  theme_cowplot() + 
+  labs(x = "Subjects", y = "GPS Footprint \n Prediction Accuracy")
+
+pdf(file.path(paste0(output_path,"diff_sens_subj",sen,".pdf")),height = 4,width = 10)
+p_subj_diff
+dev.off()   
+```
+
+
+```{r accuracy explained by data amount}
+
+pdf(file.path(paste0(output_path,"days_acc_scatter_",sen,".pdf")),height = 4,width = 5)
+conf_scatter_plot(subj_days, acc_subj, "Days Collected")
+dev.off()
+```
+
+```{r accuracy days permutation}
+df = data.frame(val = days_acc_perm_r)
+p = ggplot(df, aes(x=val)) + 
+    geom_histogram(bins = 100, fill = "#9ECAE1", size = 2) + 
+    theme_cowplot() +
+    labs(title=paste("Covariance Features: \n Average Accuracy Across",part_times,"Data Partitions"),
+         x  = "GPS Footprint Prediction Accuracy", y = "Count") + 
+  #geom_density(alpha=.2) +
+    theme(plot.title = element_text(hjust = 0.5))
+
+p = p + geom_vline(aes(xintercept=mean(val)),
+            color="black", linetype="dashed")
+p
+pdf(file.path(paste0(output_path,"days_acc_hist_perm",sen,".pdf")),height = 4,width = 5)
+p
+dev.off()
+```
+
+
+```{r accuracy explained by data quality}
+subj_minmissing = gps_df_clean2 %>% group_by(IID) %>% summarise_if(is.numeric, mean, na.rm = TRUE)
+subj_minmissing = subj_minmissing[which(subj_minmissing$IID %in% names(subj_seq)),]
+sp_plots = list()
+for (gps_ft in colnames(subj_minmissing)[-1]){
+  sp_plots[[gps_ft]] = conf_scatter_plot(subj_minmissing,acc_subj,gps_ft)
+}
+
+pdf(file.path(paste0(output_path,"minmissing_acc_scatter_",sen,".pdf")),height = 4,width = 5)
+sp_plots$MinsMissing
+dev.off()
+
+```
+
+```{r accuracy explained by age and sex}
+
+pdf(file.path(paste0(output_path,"age_acc_scatter_",sen,".pdf")),height = 4,width = 5)
+conf_scatter_plot(psych_sum, acc_subj, "admin_age")
+dev.off()
+
+pdf(file.path(paste0(output_path,"sex_acc_scatter_",sen,".pdf")),height = 4,width = 5)
+conf_scatter_plot(psych_sum, acc_subj, "admin_sex")
+dev.off()
+```
+
+
+```{r ALS}
+
+ids = read.xlsx(file.path(project_path,"data/clinical_data/subjecttracker_4.xlsx"))[1:length(unique(gps_df_clean2$IID)),]
+#psych_score = read.csv(file.path(project_path,"data/self_report_scored_20200128.csv"))
+# psych_pro = psych %>% filter(ari_proband_complete == 2)
+psych_item = read.csv(file.path(project_path,"data/clinical_data/self_report_itemwise.csv"))
+
+psych_beiwe = inner_join(ids,psych_item, by = c("BBLID" = "bblid"))
+acc_subj_df = data.frame(beiweID = names(acc_subj), acc = acc_subj)
+psych_beiwe_acc_subj = inner_join(acc_subj_df,psych_beiwe, by = "beiweID")
+
+
+psych_sum = psych_beiwe_acc_subj %>%
+            mutate(sum_als = rowSums(.[263:280], na.rm = T)) %>%
+            mutate(sum_ari = rowSums(.[grep("^ari_[0-9]$",colnames(psych_beiwe_acc_subj))], na.rm = T))
+
+psych_sum = inner_join(psych_sum, subj_days, by = c("beiweID" = "IID"))
+psych_sum$days = psych_sum$`Days Collected`
+psych_sum = inner_join(subj_minmissing, psych_sum, by = c( "IID" = "beiweID" ))
+psych_als = data.frame(als = psych_sum[,263:280], BBLID = psych_sum$BBLID)
+psych_ari = data.frame(ari = psych_sum[,23:29], BBLID = psych_sum$BBLID)
+als_ari_sum = lm(acc ~ days+ sum_als + sum_ari , data = psych_sum)
+
+days_plot = visreg(als_ari_sum, "days", gg = T, line=list(col="black")) + 
+            ylab("GPS Footprint \n Prediction Accuracy") + xlab("Days Collected") +
+            theme_cowplot() + stat_cor(method = "pearson")
+sum_als_plot = visreg(als_ari_sum, "sum_als", gg = T,  line=list(col="black")) + 
+            ylab("GPS Footprint \n Prediction Accuracy") + xlab("Affective Lability Score (ALS)") +
+            theme_cowplot() + stat_cor(method = "pearson")
+sum_ari_plot = visreg(als_ari_sum, "sum_ari", gg = T, line=list(col="black")) + 
+            ylab("GPS Footprint \n Prediction Accuracy") + xlab("Affective Reactivity Index (ARI)") +
+            theme_cowplot() + stat_cor(method = "pearson")
+mod <- lm(acc~sum_als*sum_ari + days , data=psych_sum)
+
+pdf(file.path(paste0(output_path,"ALS_acc_scatter_",sen,".pdf")),height = 4,width = 5)
+sum_als_plot
+dev.off()
+
+pdf(file.path(paste0(output_path,"ARI_acc_scatter_",sen,".pdf")),height = 4,width = 5)
+sum_ari_plot
+dev.off()
+
+
+pdf(file.path(paste0(output_path,"ALS_ARI_interaction_",sen,".pdf")),height = 4,width = 5)
+visreg(mod,xvar="sum_als",by="sum_ari",overlay=TRUE,strip.names=TRUE)
+dev.off()
+```
+
+```{r als permutation}
+df = data.frame(val = als_ari_perm_r)
+p = ggplot(df, aes(x=val)) + 
+    geom_histogram(bins = 100, fill = "#9ECAE1", size = 2) + 
+    theme_cowplot() +
+    labs(title=paste("Covariance Features: \n Average Accuracy Across",part_times,"Data Partitions"),
+         x  = "GPS Footprint Prediction Accuracy", y = "Count") + 
+  #geom_density(alpha=.2) +
+    theme(plot.title = element_text(hjust = 0.5))
+
+p = p + geom_vline(aes(xintercept=mean(val)),
+            color="black", linetype="dashed") +
+        geom_vline(aes(xintercept=mean(summary(als_ari_sum)[[8]])),
+            color="red", linetype="dashed")    
+p
+pdf(file.path(paste0(output_path,"als_hist_perm",sen,".pdf")),height = 4,width = 9)
+p
+dev.off()
+```
+
+
+```{r leison}
+
+p<-ggplot(acc_time_lesion_df, aes(x=reorder(feature, acc_time, FUN = median), y=acc_time)) + 
+   geom_jitter(aes(colour = feature), show.legend = F, width = 0.10) + 
+  geom_boxplot(show.legend = F, alpha = 0.2, outlier.alpha = 0) +
+  scale_y_continuous(limits=c(0,1)) +
+  theme_cowplot() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+    ylab("GPS Footprint Prediciton Accuracy") + xlab("Feature Removed") #+ 
+  # ggpubr::stat_pvalue_manual(
+  #   stat.test, label = "p.adj", 
+  #   y.position = 0.8,
+  #   remove.bracket = F,
+  #   step.increase = 0.1,
+  #   hide.ns = T
+  #   )
+p
+pdf(file.path(paste0(output_path,"lesion_real",sen,".pdf")),height = 5,width = 8)
+p
+dev.off()
+
+
+p_perm<-ggplot(acc_time_lesion_perm_df, aes(x=reorder(feature, acc_time, FUN = median), y=acc_time)) + 
+   geom_jitter(aes(colour = feature), show.legend = F, width = 0.10) + 
+  geom_boxplot(show.legend = F, alpha = 0.2, outlier.alpha = 0) +
+  scale_y_continuous(limits=c(0,1)) +
+  theme_cowplot() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+    ylab("GPS Footprint Prediciton Accuracy") + xlab("Feature Removed") #+ 
+  # ggpubr::stat_pvalue_manual(
+  #   stat.test, label = "p.adj", 
+  #   y.position = 0.8,
+  #   remove.bracket = F,
+  #   step.increase = 0.1,
+  #   hide.ns = T
+  #   )
+p_perm
+
+pdf(file.path(paste0(output_path,"lesion_perm",sen,".pdf")),height = 5,width = 8)
+p_perm
+dev.off()
+```
+```
