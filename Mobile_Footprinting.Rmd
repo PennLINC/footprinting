@@ -688,3 +688,6 @@ lasso_beta_df$name = edge_vars[summary(lasso_beta)$i]
 print(lasso_beta_df)
 ```
 
+<center>
+![gps_track](~/Google Drive/academia/projects/main_projects/gps/Manuscript/Figures/ChordDiag.png)
+<center>
