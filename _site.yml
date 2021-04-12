@@ -1,0 +1,10 @@
+name: "footprinting"
+output_dir: "docs"
+navbar:
+  title: "Mobile Footprinting"
+  left:
+  - text: "Home"
+   href: index.html
+output:
+  html_document:
+ theme: cosmo
